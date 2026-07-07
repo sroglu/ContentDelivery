@@ -6,9 +6,10 @@ namespace PFound.ContentDelivery
     /// Addresses an asset by a stable string id (resolved by an <see cref="IAssetSource"/> —
     /// a Resources path today, a remote bundle entry later). Implicitly convertible from string.
     /// </summary>
-    public readonly struct AssetAddress : IEquatable<AssetAddress>
+    [Serializable]
+    public struct AssetAddress : IEquatable<AssetAddress>
     {
-        public readonly string Value;
+        public string Value;
         public AssetAddress(string value) { Value = value; }
 
         public bool IsValid => !string.IsNullOrEmpty(Value);

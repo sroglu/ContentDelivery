@@ -15,7 +15,7 @@ namespace PFound.ContentDelivery
     [Serializable]
     public struct AssetReference<T> where T : UnityEngine.Object
     {
-        [SerializeField] private string _address;
+        [SerializeField, UnityEngine.Serialization.FormerlySerializedAs("Address")] private string _address;
 
         public AssetReference(string address) { _address = address; }
 
