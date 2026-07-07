@@ -1,7 +1,9 @@
 {
     "name": "PFound.ContentDelivery.Core",
     "rootNamespace": "PFound.ContentDelivery.Core",
-    "references": [],
+    "references": [
+        "PFound.Lzma"
+    ],
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,

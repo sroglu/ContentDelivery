@@ -108,7 +108,7 @@ namespace PFound.ContentDelivery.Core
                 return;
             }
 
-            long uncompressedLength = Compression.Lzma.ReadUncompressedLength(stored);
+            long uncompressedLength = PFound.Lzma.Lzma.ReadUncompressedLength(stored);
             EnsureDiskCapacity(uncompressedLength, bundle.Name);
 
             await _decompressGate.WaitAsync(cancellationToken);
@@ -120,7 +120,7 @@ namespace PFound.ContentDelivery.Core
                     string temp = loadablePath + ".tmp";
                     using (var src = new MemoryStream(stored, false))
                     using (var dst = new FileStream(temp, FileMode.Create, FileAccess.Write))
-                        Compression.Lzma.DecompressInto(src, dst);
+                        PFound.Lzma.Lzma.DecompressInto(src, dst);
                     if (File.Exists(loadablePath)) File.Delete(loadablePath);
                     File.Move(temp, loadablePath);
                 }, cancellationToken);

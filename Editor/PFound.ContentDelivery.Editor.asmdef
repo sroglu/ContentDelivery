@@ -4,6 +4,7 @@
     "references": [
         "PFound.ContentDelivery",
         "PFound.ContentDelivery.Core",
+        "PFound.Lzma",
         "UniTask",
         "Unity.ScriptableBuildPipeline.Editor",
         "Unity.ScriptableBuildPipeline"

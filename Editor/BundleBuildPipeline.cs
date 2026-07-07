@@ -93,7 +93,7 @@ namespace PFound.ContentDelivery.Editor
             {
                 string name = builds[i].assetBundleName;
                 byte[] raw = File.ReadAllBytes(Path.Combine(staging, name));
-                byte[] stored = compression == Core.BundleCompression.Lzma ? Core.Compression.Lzma.Compress(raw) : raw;
+                byte[] stored = compression == Core.BundleCompression.Lzma ? PFound.Lzma.Lzma.Compress(raw) : raw;
                 storedBytes[name] = stored;
                 built.Add(new CatalogBuilder.BuiltBundle
                 {
