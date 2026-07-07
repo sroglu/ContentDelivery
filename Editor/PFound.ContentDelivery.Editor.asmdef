@@ -1,0 +1,22 @@
+{
+    "name": "PFound.ContentDelivery.Editor",
+    "rootNamespace": "PFound.ContentDelivery.Editor",
+    "references": [
+        "PFound.ContentDelivery",
+        "PFound.ContentDelivery.Core",
+        "UniTask",
+        "Unity.ScriptableBuildPipeline.Editor",
+        "Unity.ScriptableBuildPipeline"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
