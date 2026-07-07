@@ -2,7 +2,7 @@
     "name": "PFound.ContentDelivery.Core",
     "rootNamespace": "PFound.ContentDelivery.Core",
     "references": [
-        "PFound.Lzma"
+        "PFound.Compression"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

@@ -4,6 +4,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using PFound.ContentDelivery.Core;
+using PFound.Compression;
 
 namespace PFound.ContentDelivery.Core.Tests
 {
@@ -428,7 +429,7 @@ namespace PFound.ContentDelivery.Core.Tests
         {
             var dir = Fresh(root);
             byte[] raw = Payload("the original uncompressed bundle bytes — repeated repeated repeated repeated");
-            byte[] stored = PFound.Lzma.Lzma.Compress(raw);   // the transferred object is the LZMA blob
+            byte[] stored = Lzma.Compress(raw);   // the transferred object is the LZMA blob
             string hash = ContentHash.Compute(stored);        // names the remote object
             string rawHash = ContentHash.Compute(raw);        // names the 1× decompressed cache file
             var bundle = new CatalogBundle { Name = "b", Hash = hash, UncompressedHash = rawHash, Compression = BundleCompression.Lzma };
@@ -457,7 +458,7 @@ namespace PFound.ContentDelivery.Core.Tests
         {
             var data = new byte[8000];
             for (int i = 0; i < data.Length; i++) data[i] = (byte)("ABCABC"[i % 6]);
-            byte[] comp = PFound.Lzma.Lzma.Compress(data);
+            byte[] comp = Lzma.Compress(data);
             Assert(LzmaRoundTrips(data), "round-trip identity for repetitive data");
             Assert(comp.Length < data.Length / 4, "repetitive data should compress well (got " + comp.Length + ")");
         }
@@ -608,7 +609,7 @@ namespace PFound.ContentDelivery.Core.Tests
                 raws[i] = new byte[2000 + i * 137];
                 rng.NextBytes(raws[i]);
                 for (int j = 0; j < 300 && j < raws[i].Length; j++) raws[i][j] = (byte)(i & 0xFF); // compressible head
-                comps[i] = PFound.Lzma.Lzma.Compress(raws[i]);
+                comps[i] = Lzma.Compress(raws[i]);
             }
 
             int failures = 0;
@@ -624,11 +625,11 @@ namespace PFound.ContentDelivery.Core.Tests
                     {
                         using (var ms = new MemoryStream())
                         {
-                            PFound.Lzma.Lzma.DecompressInto(comps[idx], ms);
+                            Lzma.DecompressInto(comps[idx], ms);
                             got = ms.ToArray();
                         }
                     }
-                    else got = PFound.Lzma.Lzma.Decompress(comps[idx]);
+                    else got = Lzma.Decompress(comps[idx]);
 
                     if (got.Length != raws[idx].Length) { Interlocked.Increment(ref failures); return; }
                     for (int k = 0; k < got.Length; k++)
@@ -651,7 +652,7 @@ namespace PFound.ContentDelivery.Core.Tests
 
         private static bool LzmaRoundTrips(byte[] data)
         {
-            byte[] back = PFound.Lzma.Lzma.Decompress(PFound.Lzma.Lzma.Compress(data));
+            byte[] back = Lzma.Decompress(Lzma.Compress(data));
             if (back.Length != data.Length) return false;
             for (int i = 0; i < data.Length; i++) if (back[i] != data[i]) return false;
             return true;

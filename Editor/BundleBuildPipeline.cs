@@ -6,6 +6,7 @@ using UnityEditor.Build.Pipeline;
 using UnityEditor.Build.Pipeline.Interfaces;
 using UnityEngine;
 using PFound.ContentDelivery.Core;
+using PFound.Compression;
 
 namespace PFound.ContentDelivery.Editor
 {
@@ -93,7 +94,7 @@ namespace PFound.ContentDelivery.Editor
             {
                 string name = builds[i].assetBundleName;
                 byte[] raw = File.ReadAllBytes(Path.Combine(staging, name));
-                byte[] stored = compression == Core.BundleCompression.Lzma ? PFound.Lzma.Lzma.Compress(raw) : raw;
+                byte[] stored = compression == Core.BundleCompression.Lzma ? Lzma.Compress(raw) : raw;
                 storedBytes[name] = stored;
                 built.Add(new CatalogBuilder.BuiltBundle
                 {
