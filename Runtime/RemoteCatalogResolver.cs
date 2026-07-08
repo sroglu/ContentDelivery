@@ -53,6 +53,22 @@ namespace PFound.ContentDelivery
 
             var plan = CatalogAcquisitionPlan.Decide(required, embedded.Found ? embedded.FileName : null, cached);
 
+            // Downgrade guard: the pointer can name a catalog OLDER than the build-embedded one (rollback /
+            // stale CDN pointer). The (appVersion, build) postfix in the name orders them — if the pointer's
+            // target is older than embedded, keep embedded instead of pulling the older content.
+            if (plan != CatalogSource.Embedded && embedded.Found)
+            {
+                var requiredVersion = CatalogNameVersion.Parse(required);
+                var embeddedVersion = CatalogNameVersion.Parse(embedded.FileName);
+                if (requiredVersion.Parsed && embeddedVersion.Parsed && requiredVersion.CompareTo(embeddedVersion) < 0)
+                {
+                    UnityEngine.Debug.LogWarning(
+                        $"[ContentDelivery] Downgrade blocked: pointer catalog '{required}' ({requiredVersion}) is older " +
+                        $"than embedded '{embedded.FileName}' ({embeddedVersion}) — keeping the embedded catalog.");
+                    return new CatalogResolveResult(true, embedded.Catalog, CatalogSource.Embedded, null);
+                }
+            }
+
             try
             {
                 Catalog catalog;

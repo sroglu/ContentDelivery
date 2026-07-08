@@ -50,6 +50,10 @@ namespace PFound.ContentDelivery.Editor
                 return default;
             }
 
+            // Monotonic version stamp: each App Build gets a fresh build number, so CatalogFileName() (used by
+            // StageEmbeddedPackage + the pointer) names a strictly-newer catalog than the last one.
+            config.BumpBuildNumber();
+
             // Offline packages must be directly loadable from StreamingAssets, so build UNCOMPRESSED (Unity LZ4);
             // online builds keep the LZMA transfer form the runtime decompresses into its cache.
             var compression = config.OfflineBuild ? BundleCompression.None : BundleCompression.Lzma;

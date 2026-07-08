@@ -1,4 +1,7 @@
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using Sirenix.OdinInspector;
 using UnityEditor;
 using UnityEngine;
 using PFound.ContentDelivery.Core;
@@ -9,47 +12,216 @@ namespace PFound.ContentDelivery.Editor
     [System.Serializable]
     public struct ContentEnvironmentEntry
     {
-        public string Name;
+        [HorizontalGroup("env", 0.30f), LabelWidth(40)] public string Name;
+        [HorizontalGroup("env"), LabelWidth(60), Tooltip("May use tokens (see 'BaseUrl tokens' below). Empty = offline.")]
         public string BaseUrl;
     }
 
     /// <summary>
-    /// The editor build-configuration for content delivery, centered on the <see cref="OfflineBuild"/> master
-    /// switch:
-    /// <list type="bullet">
-    ///   <item><b>OfflineBuild = true</b> — every group is forced-embedded into StreamingAssets and the catalog is
-    ///   emitted with zero remote entries: a fully self-contained, no-CDN package.</item>
-    ///   <item><b>OfflineBuild = false</b> — per-group distribution is honored; remote groups are staged for upload.</item>
-    /// </list>
-    /// It also carries the build platform, scope, group selection, game id, upload target, and the shared content
-    /// environments — one authored source so the runtime remote config and the build never drift. Editor-only SO.
+    /// The editor build-configuration for content delivery, centered on <see cref="OfflineBuild"/>:
+    /// <b>true</b> embeds every group into StreamingAssets (no CDN); <b>false</b> honors per-group distribution and
+    /// stages remote groups for upload. Carries the platform/scope/group-selection, game id, the monotonic catalog
+    /// build number (folded into the versioned catalog name), the upload target and the shared environments. Odin
+    /// inspector; the selector-window drawers are replaced with plain popups (Odin's OdinEditorWindow is broken on
+    /// this Unity version). Editor-only SO.
     /// </summary>
     [CreateAssetMenu(menuName = "PFound/Content Delivery/Catalog Editor Config", fileName = "CatalogEditorConfig")]
-    public sealed class CatalogEditorConfig : ScriptableObject
+    public sealed class CatalogEditorConfig : ScriptableObject, IContentAuthoringValidation
     {
-        [Header("Master switch")]
+        [InfoBox("@AuthoringValidation.Errors(this)", InfoMessageType.Error, "@AuthoringValidation.HasErrors(this)")]
+        [InfoBox("@AuthoringValidation.Warnings(this)", InfoMessageType.Warning, "@AuthoringValidation.HasWarnings(this)")]
+        [InfoBox("Ready — no authoring issues.", InfoMessageType.Info, "@AuthoringValidation.Ready(this)")]
+        [InfoBox("@OfflineBuild ? \"OFFLINE: every group is embedded into StreamingAssets; remote/env/upload are ignored.\" " +
+                 ": \"ONLINE: per-group distribution is honored; remote groups upload to the active environment.\"", InfoMessageType.None)]
         [Tooltip("Force ALL groups into StreamingAssets and strip remote entries from the catalog (offline package).")]
         public bool OfflineBuild = false;
 
-        [Header("Build")]
-        public BuildTarget BuildPlatform = BuildTarget.Android;
-        [Tooltip("Which groups the build includes.")]
-        public BuildScope Scope = BuildScope.AllGroups;
-        [Tooltip("Groups built when Scope = OnlySelected.")]
-        public List<AssetGroup> GroupsToBuild = new List<AssetGroup>();
-        [Tooltip("Game identifier folded into the catalog file name / upload path.")]
-        public string GameId = "game";
-
-        [Header("Environments (shared source — no drift)")]
+        [FoldoutGroup("Environments (shared source — no drift)", expanded: true)]
+        [DisableIf(nameof(OfflineBuild)), ListDrawerSettings(ShowFoldout = false)]
         public List<ContentEnvironmentEntry> Environments = new List<ContentEnvironmentEntry>();
-        [Tooltip("The active environment name; must be one of Environments above.")]
+
+        // CustomValueDrawer (plain popup) instead of [ValueDropdown]: Odin's selector window is broken here.
+        [FoldoutGroup("Environments (shared source — no drift)")]
+        [DisableIf(nameof(OfflineBuild)), CustomValueDrawer(nameof(DrawActiveEnvironment))]
         public string ActiveEnvironment = "prod";
 
-        [Header("Upload")]
-        [Tooltip("Authored gate for the post-build upload step (OFF = build only). When ON, UploadTargetIndex applies.")]
+        [FoldoutGroup("Environments (shared source — no drift)"), ShowInInspector, ReadOnly]
+        [DictionaryDrawerSettings(KeyLabel = "Token", ValueLabel = "Resolves To", IsReadOnly = true)]
+        [Tooltip("Tokens you can put in a BaseUrl above — shown with what they resolve to on THIS machine.")]
+        Dictionary<string, string> BaseUrlTokens => new Dictionary<string, string>
+        {
+            { "{PROJECT}",              ProjectRoot() },
+            { "{persistentDataPath}",   Application.persistentDataPath },
+            { "{streamingAssetsPath}",  Application.streamingAssetsPath },
+        };
+
+        // Plain enum popup for the big BuildTarget enum (Odin's enum selector opens the broken window).
+        [FoldoutGroup("Build", expanded: true), CustomValueDrawer(nameof(DrawBuildPlatform))]
+        public BuildTarget BuildPlatform = BuildTarget.Android;
+        [FoldoutGroup("Build"), Tooltip("Which groups the build includes.")]
+        public BuildScope Scope = BuildScope.AllGroups;
+        [FoldoutGroup("Build"), ShowIf(nameof(ScopeIsSelected)), Tooltip("Groups built when Scope = OnlySelected.")]
+        public List<AssetGroup> GroupsToBuild = new List<AssetGroup>();
+        [FoldoutGroup("Build"), Tooltip("Game identifier folded into the catalog file name / upload path.")]
+        public string GameId = "game";
+
+        [FoldoutGroup("Catalog Version", expanded: true), ShowInInspector, ReadOnly, DisplayAsString, LabelText("App Version")]
+        string AppVersionDisplay => AppVersion();
+        [FoldoutGroup("Catalog Version"), ShowInInspector, ReadOnly, LabelText("Last Built #")]
+        int LastBuiltDisplay => CatalogBuildNumber;
+        [FoldoutGroup("Catalog Version"), ShowInInspector, ReadOnly, DisplayAsString, LabelText("Next Catalog (preview)")]
+        string NextCatalogPreview => CatalogNameVersion.Compose(GameId, AppVersion(), CatalogBuildNumber + 1);
+        [FoldoutGroup("Catalog Version")]
+        [InfoBox("(appVersion, build#) postfix orders catalogs — the runtime rejects an older one (rollback / stale " +
+                 "pointer). Build# bumps automatically on each App Build.")]
+        [Button("App Build (offline / online per config)", ButtonSizes.Medium)]
+        void AppBuildButton() => CatalogEditorBuildRunner.Build(this);
+
+        // Per-platform embedded build table (Platform → ✓/✗ + size). Cheap (dir stat + tiny pointer read) so it
+        // lives in the inspector; no catalog decode. This is your LOCAL build state — NOT whether it's on a CDN.
+        [FoldoutGroup("Build Readiness (LOCAL only — not the CDN)", expanded: true), ShowInInspector, ReadOnly]
+        [DictionaryDrawerSettings(KeyLabel = "Platform", ValueLabel = "Embedded build (shipped, offline)", IsReadOnly = true)]
+        Dictionary<string, string> BuildReadiness
+        {
+            get
+            {
+                var d = new Dictionary<string, string>();
+                foreach (var p in new[] { "StandaloneOSX", "iOS", "Android", "StandaloneWindows64" })
+                {
+                    string dir = ContentPlatform.GetEmbeddedAssetBundlePath(p);
+                    if (!ContentPlatform.HasEmbeddedBundles(p)) { d[p] = "✗ none"; continue; }
+                    string pointer = System.IO.Path.Combine(dir, AssetBundleLayout.EmbeddedCatalogPointerFileName);
+                    string cat = System.IO.File.Exists(pointer) ? System.IO.File.ReadAllText(pointer).Trim() : null;
+                    d[p] = $"✓ ({FormatSize(DirFilesSize(dir))})" + (cat != null ? $"  {cat}" : "  (no catalog pointer)");
+                }
+                return d;
+            }
+        }
+
+        [FoldoutGroup("Build Readiness (LOCAL only — not the CDN)")]
+        [Button("Check Remote / CDN availability (network)")]
+        void CheckRemote()
+        {
+            _remoteStatus.Clear();
+            var reader = new RemoteCatalogPointerReader(ContentDeliveryBootstrap.DefaultTransport);
+            foreach (var env in Environments)
+            {
+                string origin = ResolveTokens(env.BaseUrl);
+                if (string.IsNullOrEmpty(origin)) continue;
+                foreach (var p in new[] { "StandaloneOSX", "iOS", "Android" })
+                {
+                    var ptr = reader.TryReadPointerAsync(origin, p).GetAwaiter().GetResult();
+                    _remoteStatus[$"{env.Name} / {p}"] = ptr.Resolved ? $"✓ {ptr.CatalogFileName}" : "✗ missing / unreachable";
+                }
+            }
+            Debug.Log($"[ContentDelivery] Remote availability checked — {_remoteStatus.Count} env/platform combo(s).");
+        }
+
+        [FoldoutGroup("Build Readiness (LOCAL only — not the CDN)"), ShowInInspector, ReadOnly]
+        [LabelText("Env deployment — last check (CDN)")]
+        [DictionaryDrawerSettings(KeyLabel = "Env / Platform", ValueLabel = "CDN catalog", IsReadOnly = true)]
+        Dictionary<string, string> _remoteStatus = new Dictionary<string, string>();
+
+        [FoldoutGroup("Build Readiness (LOCAL only — not the CDN)"), GUIColor(0.9f, 0.5f, 0.4f)]
+        [Button("Clear Build (embedded, this platform)")]
+        void ClearBuild()
+        {
+            if (!EditorUtility.DisplayDialog("Clear Build",
+                    $"Delete the embedded build for {PlatformFolder()} from StreamingAssets?", "Clear", "Cancel")) return;
+            CatalogEditorBuildRunner.ClearEmbedded(PlatformFolder());
+            AssetDatabase.Refresh();
+        }
+
+        [SerializeField, HideInInspector] int _catalogBuildNumber = 0;
+
+        [FoldoutGroup("Upload"), DisableIf(nameof(OfflineBuild))]
+        [Tooltip("Authored gate for the post-build upload step (OFF = build only).")]
         public bool UploadAfterBuild = false;
-        [Tooltip("Index into an app-provided uploader list; applies only when UploadAfterBuild is ON.")]
+        [FoldoutGroup("Upload"), DisableIf(nameof(OfflineBuild)), ShowIf(nameof(UploadAfterBuild))]
+        [Tooltip("Index into an app-provided uploader list.")]
         public int UploadTargetIndex = 0;
+
+        [FoldoutGroup("Upload"), DisableIf(nameof(OfflineBuild))]
+        [InfoBox("Remote upload runs via an app-provided ICdnUploader (DirectoryUploader / FtpUploader / BunnyCdnUploader " +
+                 "/ S3Uploader) — call CatalogEditorBuildRunner.UploadAsync(config, uploader, publishDir) from your build " +
+                 "pipeline. This button uploads directly for a local file:// environment (dev); a CDN env needs the app to supply the uploader.")]
+        [Button("Upload last published build → active env")]
+        void UploadLastBuild()
+        {
+            string origin = ResolveTokens(ActiveBaseUrl());
+            if (string.IsNullOrEmpty(origin)) { Debug.Log("[ContentDelivery] Active environment is offline — nothing to upload."); return; }
+            if (!origin.StartsWith("file://"))
+            {
+                Debug.LogWarning($"[ContentDelivery] '{ActiveEnvironment}' is a network env ({origin}) — supply an ICdnUploader " +
+                                 "in your build pipeline (CatalogEditorBuildRunner.UploadAsync). Direct upload here only covers file:// dev envs.");
+                return;
+            }
+            string publish = System.IO.Path.Combine(System.IO.Directory.GetParent(Application.dataPath).FullName, "ContentBuild", "publish");
+            string dest = origin.Substring("file://".Length);
+            if (!System.IO.Directory.Exists(publish)) { Debug.LogWarning($"[ContentDelivery] No published build at {publish} — run an online App Build first."); return; }
+            CdnUpload.UploadPublishDirectoryAsync(new DirectoryUploader(dest), publish).GetAwaiter().GetResult();
+            Debug.Log($"[ContentDelivery] Uploaded {publish} → {dest}");
+        }
+
+        bool ScopeIsSelected => Scope == BuildScope.OnlySelected;
+
+        // Editor token resolution — {PROJECT} = the PROJECT ROOT folder (matches the legacy convention for
+        // file:// dev servers), not the app product name.
+        static string ProjectRoot() => Directory.GetParent(Application.dataPath).FullName;
+        static string ResolveTokens(string url) => string.IsNullOrEmpty(url) ? url :
+            url.Replace("{PROJECT}", ProjectRoot())
+               .Replace("{persistentDataPath}", Application.persistentDataPath)
+               .Replace("{streamingAssetsPath}", Application.streamingAssetsPath);
+
+        static long DirFilesSize(string dir)
+        {
+            if (!Directory.Exists(dir)) return 0;
+            long total = 0;
+            foreach (var f in Directory.GetFiles(dir, "*", SearchOption.AllDirectories))
+                if (!f.EndsWith(".meta", System.StringComparison.Ordinal)) total += new FileInfo(f).Length;
+            return total;
+        }
+
+        static string FormatSize(long bytes)
+        {
+            if (bytes >= 1024L * 1024 * 1024) return $"{bytes / 1024d / 1024 / 1024:0.#} GB";
+            if (bytes >= 1024L * 1024)        return $"{bytes / 1024d / 1024:0.#} MB";
+            if (bytes >= 1024)                return $"{bytes / 1024d:0.#} KB";
+            return $"{bytes} B";
+        }
+
+        // --- plain-popup drawers (avoid Odin's broken selector window) ---
+        string DrawActiveEnvironment(string value, GUIContent label)
+        {
+            var names = Environments.Select(e => e.Name).ToArray();
+            if (names.Length == 0) { EditorGUILayout.LabelField(label, new GUIContent("(add an environment above)")); return value; }
+            int cur = System.Array.IndexOf(names, value);
+            if (cur >= 0)
+            {
+                int picked = EditorGUILayout.Popup(label.text, cur, names);
+                return picked != cur ? names[picked] : value;
+            }
+            var opts = new[] { $"⚠ '{value}' (not in list)" }.Concat(names).ToArray();
+            int p = EditorGUILayout.Popup(label.text, 0, opts);
+            return p > 0 ? names[p - 1] : value;
+        }
+
+        BuildTarget DrawBuildPlatform(BuildTarget value, GUIContent label) =>
+            (BuildTarget)EditorGUILayout.EnumPopup(label, value);
+
+        /// <summary>The number of the LAST App Build (0 = never built). The next build uses <c>+1</c>.</summary>
+        public int CatalogBuildNumber => _catalogBuildNumber;
+
+        /// <summary>The player app version stamped into the catalog name (scopes a catalog to a release).</summary>
+        public string AppVersion() => PlayerSettings.bundleVersion;
+
+        /// <summary>Bumps the build counter and persists it. Call once per App Build, before naming the catalog.</summary>
+        public void BumpBuildNumber()
+        {
+            _catalogBuildNumber++;
+            EditorUtility.SetDirty(this);
+            AssetDatabase.SaveAssets();
+        }
 
         /// <summary>The active environment's base URL, or empty when offline / unconfigured.</summary>
         public string ActiveBaseUrl()
@@ -61,8 +233,11 @@ namespace PFound.ContentDelivery.Editor
             return string.Empty;
         }
 
-        /// <summary>The catalog file name (with extension) this config publishes, folding in the game id.</summary>
-        public string CatalogFileName() => "catalog_" + GameId + ".json";
+        /// <summary>
+        /// The catalog file name this config publishes: <c>catalog_&lt;gameId&gt;_v&lt;appVersion&gt;_b&lt;build&gt;.json</c>.
+        /// Uses the CURRENT <see cref="CatalogBuildNumber"/> — call <see cref="BumpBuildNumber"/> first. See <see cref="CatalogNameVersion"/>.
+        /// </summary>
+        public string CatalogFileName() => CatalogNameVersion.Compose(GameId, AppVersion(), CatalogBuildNumber);
 
         /// <summary>The platform folder name for <see cref="BuildPlatform"/> (matches the runtime layout).</summary>
         public string PlatformFolder() => ContentPlatform.EditorPlatformFolder(BuildPlatform);
@@ -70,5 +245,19 @@ namespace PFound.ContentDelivery.Editor
         /// <summary>The runtime remote config this build targets (empty base URL = offline).</summary>
         public RemoteContentConfig ToRemoteConfig() =>
             new RemoteContentConfig(ActiveBaseUrl(), PlatformFolder(), CatalogFileName());
+
+        /// <summary>Inspector self-validation (see <see cref="IContentAuthoringValidation"/>).</summary>
+        public IEnumerable<AuthoringIssue> Validate()
+        {
+            if (string.IsNullOrWhiteSpace(GameId))
+                yield return AuthoringIssue.Warning("Game Id is empty — set a game id (it names the catalog).");
+
+            if (OfflineBuild) yield break; // env/upload ignored offline
+
+            if (Environments.Count == 0)
+                yield return AuthoringIssue.Warning("No environments defined — online builds have no CDN origin to target.");
+            else if (!Environments.Any(e => string.Equals(e.Name, ActiveEnvironment, System.StringComparison.Ordinal)))
+                yield return AuthoringIssue.Error($"Active Environment '{ActiveEnvironment}' is not one of the environments — pick a valid one.");
+        }
     }
 }
