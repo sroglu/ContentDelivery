@@ -51,6 +51,14 @@ namespace PFound.ContentDelivery.Core.Tests
                 Run("Scheduler provisions all bundles (sequential)", () => Scheduler_Sequential(temp));
                 Run("Scheduler retries transient failures within its budget", () => Scheduler_RetriesTransient(temp));
                 Run("Scheduler disk-capacity precheck rejects an impossible total", () => Scheduler_DiskPrecheck(temp));
+                Run("Scheduler retries corrupt bytes under the integrity budget then fails", () => Scheduler_IntegrityRetries(temp));
+                Run("Scheduler stall watchdog abandons a hung attempt then succeeds", () => Scheduler_StallWatchdog(temp));
+                Run("Scheduler feeds the speed meter Good/Bad classification", () => Scheduler_FeedsSpeedMeter(temp));
+                Run("SpeedMeter raises only on Good/Bad transitions (direct rate)", () => SpeedMeter_DirectTransitions());
+                Run("SpeedMeter cumulative sampling honours the check interval", () => SpeedMeter_IntervalGating());
+                Run("DeferredUnloadQueue releases after the frame window", () => DeferredQueue_ReleasesAfterFrames());
+                Run("DeferredUnloadQueue cancel prevents a pending release", () => DeferredQueue_CancelRevives());
+                Run("DeferredUnloadQueue flush releases everything at once", () => DeferredQueue_Flush());
                 Run("CatalogBinary round-trips bundles, assets, deps, flags + version", () => CatalogBinary_RoundTrips());
                 Run("CatalogBinary rejects non-catalog bytes", () => CatalogBinary_RejectsBadMagic());
             }
@@ -377,21 +385,28 @@ namespace PFound.ContentDelivery.Core.Tests
             return dir;
         }
 
-        /// <summary>In-memory transport: a url→bytes map, a call counter, and optional N-failures-first.</summary>
+        /// <summary>
+        /// In-memory transport: a url→bytes map, a call counter, optional N-failures-first, optional N-hangs-first
+        /// (each hangs until the token cancels — the stall watchdog), and a global corrupt-bytes toggle.
+        /// </summary>
         private sealed class FakeTransport : IDownloadTransport
         {
             private readonly Dictionary<string, byte[]> _content = new Dictionary<string, byte[]>(StringComparer.Ordinal);
             public int Calls;
             public int FailFirst;
+            public int HangFirst;
+            public bool Corrupt; // always return bytes that will NOT match the expected hash
 
             public void Put(string url, byte[] bytes) => _content[url] = bytes;
 
-            public Task<byte[]> DownloadBytesAsync(string url, CancellationToken cancellationToken = default)
+            public async Task<byte[]> DownloadBytesAsync(string url, CancellationToken cancellationToken = default)
             {
-                Calls++;
-                if (Calls <= FailFirst) throw new IOException("simulated transient failure");
+                int call = Interlocked.Increment(ref Calls);
+                if (call <= HangFirst) await Task.Delay(System.Threading.Timeout.Infinite, cancellationToken);
+                if (call <= FailFirst) throw new IOException("simulated transient failure");
+                if (Corrupt) return Payload("corrupt-bytes-that-will-not-match-" + call);
                 if (!_content.TryGetValue(url, out var bytes)) throw new IOException("404 " + url);
-                return Task.FromResult(bytes);
+                return bytes;
             }
 
             public Task DownloadToFileAsync(string url, string destinationPath, CancellationToken cancellationToken = default)
@@ -594,6 +609,140 @@ namespace PFound.ContentDelivery.Core.Tests
 
             AssertThrows<NotEnoughDiskCapacityException>(
                 () => Wait(scheduler.ProvisionAsync(bundles)), "an impossible disk estimate is rejected up front");
+        }
+
+        private static void Scheduler_IntegrityRetries(string root)
+        {
+            var dir = Fresh(root);
+            byte[] payload = Payload("integrity");
+            string hash = ContentHash.Compute(payload);
+            var bundles = new[] { new CatalogBundle { Name = "b", Hash = hash } };
+            var transport = new FakeTransport { Corrupt = true }; // every fetch returns bytes that fail the hash
+            transport.Put(Url(hash), payload);
+            // provisioner gives up after 1 internal attempt so the scheduler's integrity budget drives the retries.
+            var scheduler = new DownloadScheduler(new BundleProvisioner(transport, dir, "https://cdn/", maxAttempts: 1),
+                new DownloadSchedulerOptions
+                {
+                    MaxItemRetries = 10,          // a big TRANSIENT budget must NOT be used for corrupt bytes
+                    MaxIntegrityRetries = 3,
+                    IntegrityRetryBackoff = TimeSpan.Zero,
+                    RetryBackoff = TimeSpan.Zero,
+                });
+
+            var result = Wait(scheduler.ProvisionAsync(bundles));
+            AssertEqual(0, result.Succeeded, "corrupt bundle never provisions");
+            AssertEqual(1, result.Failed, "reported as failed");
+            AssertEqual(3, transport.Calls, "tried exactly the integrity budget (not the larger transient budget)");
+        }
+
+        private static void Scheduler_StallWatchdog(string root)
+        {
+            var dir = Fresh(root);
+            byte[] payload = Payload("stall-then-ok");
+            string hash = ContentHash.Compute(payload);
+            var bundles = new[] { new CatalogBundle { Name = "b", Hash = hash } };
+            var transport = new FakeTransport { HangFirst = 1 }; // first attempt hangs; second returns good bytes
+            transport.Put(Url(hash), payload);
+            var scheduler = new DownloadScheduler(new BundleProvisioner(transport, dir, "https://cdn/", maxAttempts: 1),
+                new DownloadSchedulerOptions
+                {
+                    StallTimeout = TimeSpan.FromMilliseconds(150),
+                    MaxItemRetries = 3,
+                    RetryBackoff = TimeSpan.Zero,
+                });
+
+            var result = Wait(scheduler.ProvisionAsync(bundles));
+            AssertEqual(1, result.Succeeded, "recovered after the stall watchdog abandoned the hung attempt");
+            AssertEqual(2, transport.Calls, "one hung attempt (timed out) then one good attempt");
+        }
+
+        private static void Scheduler_FeedsSpeedMeter(string root)
+        {
+            var dir = Fresh(root);
+            var transport = new FakeTransport();
+            var bundles = PublishBundles(transport, 3);
+            // A threshold above any achievable in-memory rate is impossible to beat → the meter must flip to Bad.
+            var meter = new DownloadSpeedMeter(double.MaxValue);
+            bool wentBad = false;
+            meter.BadDetected += () => wentBad = true;
+            var scheduler = new DownloadScheduler(new BundleProvisioner(transport, dir, "https://cdn/"),
+                new DownloadSchedulerOptions { RetryBackoff = TimeSpan.Zero, SpeedMeter = meter });
+
+            var result = Wait(scheduler.ProvisionAsync(bundles));
+            AssertEqual(3, result.Succeeded, "all provisioned");
+            Assert(wentBad, "the speed meter was fed and classified the (sub-threshold) rate as Bad");
+        }
+
+        private static void SpeedMeter_DirectTransitions()
+        {
+            var meter = new DownloadSpeedMeter(1000); // 1000 B/s threshold
+            int changes = 0; DownloadSpeedRating lastRating = DownloadSpeedRating.Good;
+            int bad = 0, good = 0;
+            meter.RatingChanged += r => { changes++; lastRating = r; };
+            meter.BadDetected += () => bad++;
+            meter.GoodDetected += () => good++;
+
+            AssertEqual(DownloadSpeedRating.Good, meter.Rating, "starts optimistic (Good)");
+            meter.Sample(2000);  // still good — no transition
+            AssertEqual(0, changes, "no event while staying Good");
+            meter.Sample(500);   // Good → Bad
+            AssertEqual(1, changes, "one transition to Bad");
+            AssertEqual(1, bad, "BadDetected fired");
+            AssertEqual(DownloadSpeedRating.Bad, lastRating, "rating is Bad");
+            meter.Sample(400);   // still bad — no transition
+            AssertEqual(1, changes, "no event while staying Bad");
+            meter.Sample(5000);  // Bad → Good
+            AssertEqual(2, changes, "one transition back to Good");
+            AssertEqual(1, good, "GoodDetected fired");
+        }
+
+        private static void SpeedMeter_IntervalGating()
+        {
+            var meter = new DownloadSpeedMeter(1000) { CheckInterval = 1.0 };
+            int bad = 0;
+            meter.BadDetected += () => bad++;
+
+            meter.Sample(0.0, 0);      // seed baseline (no classification)
+            meter.Sample(0.5, 100);    // 0.5s elapsed < interval → ignored (a burst can't flip it)
+            AssertEqual(0, bad, "sub-interval reading ignored");
+            meter.Sample(2.0, 300);    // now 2.0s since baseline, 300 bytes → 150 B/s < 1000 → Bad
+            AssertEqual(1, bad, "slow sustained rate classified Bad once the interval elapsed");
+        }
+
+        private static void DeferredQueue_ReleasesAfterFrames()
+        {
+            var q = new DeferredUnloadQueue<int>(frames: 2);
+            var released = new List<int>();
+            q.Enqueue(7, currentFrame: 100);
+            q.Pump(101, released.Add);  // 1 frame later — still in the grace window
+            AssertEqual(0, released.Count, "not released before the window elapses");
+            Assert(q.IsQueued(7), "still queued");
+            q.Pump(102, released.Add);  // 2 frames later — due
+            AssertEqual(1, released.Count, "released once the window elapses");
+            AssertEqual(7, released[0], "released the right key");
+            Assert(!q.IsQueued(7), "dropped from the queue after release");
+        }
+
+        private static void DeferredQueue_CancelRevives()
+        {
+            var q = new DeferredUnloadQueue<int>(frames: 2);
+            var released = new List<int>();
+            q.Enqueue(5, 100);
+            Assert(q.Cancel(5), "cancel reports a pending release existed");
+            q.Pump(200, released.Add); // long past the window
+            AssertEqual(0, released.Count, "a cancelled (re-acquired) key is never released");
+            AssertEqual(0, q.Count, "queue empty after cancel");
+        }
+
+        private static void DeferredQueue_Flush()
+        {
+            var q = new DeferredUnloadQueue<int>(frames: 100);
+            var released = new List<int>();
+            q.Enqueue(1, 0); q.Enqueue(2, 0); q.Enqueue(3, 0);
+            q.Flush(released.Add); // even well within the window, flush releases everything now
+            released.Sort();
+            AssertEqual(3, released.Count, "flush released all pending keys");
+            AssertEqual(0, q.Count, "queue empty after flush");
         }
 
         private static void Lzma_PooledConcurrent()

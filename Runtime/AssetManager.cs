@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using Cysharp.Threading.Tasks;
 using Unity.Profiling;
 using UnityEngine;
+using PFound.ContentDelivery.Core;
 
 namespace PFound.ContentDelivery
 {
@@ -34,6 +35,15 @@ namespace PFound.ContentDelivery
         private static readonly Dictionary<AssetAddress, Entry> s_entries = new Dictionary<AssetAddress, Entry>();
         private static readonly Dictionary<int, InstanceRef> s_instances = new Dictionary<int, InstanceRef>();
 
+        // Deferred unload: when > 0, an entry whose ref-count reaches zero is kept resident for that many frames
+        // (a re-load within the window revives it) before its source is released — the configurable alternative to
+        // immediate unload. Zero = release the instant the count hits zero (the default).
+        private static int s_deferredUnloadFrames;
+        private static DeferredUnloadQueue<AssetAddress> s_deferredUnloads = new DeferredUnloadQueue<AssetAddress>(0);
+
+        /// <summary>Raised after a low-memory cleanup (<see cref="HandleLowMemory"/>) runs.</summary>
+        public static event System.Action LowMemoryHandled;
+
         // Wraps the whole resolve (cache check + source-chain walk + load) — the outermost ContentDelivery
         // load span; the remote source and bundle registry nest their own markers beneath it.
         private static readonly ProfilerMarker s_resolveMarker = new(ProfilerCategory.Loading, "ContentDelivery.Resolve");
@@ -47,6 +57,25 @@ namespace PFound.ContentDelivery
         /// <summary>Removes a previously-registered source (e.g. the editor fast-path source when toggled off).
         /// Returns whether it was present.</summary>
         public static bool UnregisterSource(IAssetSource source) => source != null && s_sources.Remove(source);
+
+        /// <summary>
+        /// Frames to keep a zero-ref entry resident before releasing its source. 0 (default) releases immediately.
+        /// Raising it trades a little extra residency for absorbing load / unload / re-load churn without a bundle
+        /// reload; the <see cref="ContentDeliveryRuntime"/> host pumps the queue each frame. Changing the value
+        /// flushes anything already pending under the old policy.
+        /// </summary>
+        public static int DeferredUnloadFrames
+        {
+            get => s_deferredUnloadFrames;
+            set
+            {
+                if (value < 0) throw new System.ArgumentOutOfRangeException(nameof(value));
+                if (value == s_deferredUnloadFrames) return;
+                FlushDeferredUnloads();
+                s_deferredUnloadFrames = value;
+                s_deferredUnloads = new DeferredUnloadQueue<AssetAddress>(value);
+            }
+        }
 
         public static AsyncAssetLoadHandle<T> LoadAssetAsync<T>(AssetAddress address) where T : Object =>
             LoadAssetAsync<T>(address, AssetLoaderId.Global);
@@ -98,12 +127,54 @@ namespace PFound.ContentDelivery
             }
 
             if (--entry.RefCount > 0) return;
+
+            if (s_deferredUnloadFrames > 0)
+            {
+                // Keep the entry resident but mark it for release after the grace window; a re-load revives it.
+                s_deferredUnloads.Enqueue(address, Time.frameCount);
+                return;
+            }
+
+            ReleaseEntry(address);
+        }
+
+        // Removes a zero-ref entry and lets its resolving source free the backing resources (ref-counted bundle
+        // closure, etc.). Skips an entry revived (ref-count back above zero) between queueing and release.
+        private static void ReleaseEntry(AssetAddress address)
+        {
+            if (!s_entries.TryGetValue(address, out var entry)) return;
+            if (entry.RefCount > 0) return;
             s_entries.Remove(address);
-            // Let the resolving source free its backing resources (ref-counted bundle closure, etc.).
             entry.Source?.Release(address);
         }
 
+        /// <summary>Releases every entry whose deferred-unload grace window has elapsed as of <paramref name="currentFrame"/>.
+        /// The runtime host calls this each frame; a no-op when no unload is deferred.</summary>
+        public static void PumpDeferredUnloads(int currentFrame)
+        {
+            if (s_deferredUnloads.Count > 0) s_deferredUnloads.Pump(currentFrame, ReleaseEntry);
+        }
+
+        /// <summary>Immediately releases every entry pending a deferred unload (teardown / low-memory).</summary>
+        public static void FlushDeferredUnloads() => s_deferredUnloads.Flush(ReleaseEntry);
+
+        /// <summary>
+        /// Low-memory response: releases all non-pinned residency — everything pending a deferred unload is freed now
+        /// (assets still referenced stay put, pinned by their holders) — then runs an unused-asset sweep + GC and
+        /// raises <see cref="LowMemoryHandled"/>. Wired to <c>Application.lowMemory</c> by <see cref="ContentDeliveryRuntime"/>.
+        /// </summary>
+        public static void HandleLowMemory()
+        {
+            FlushDeferredUnloads();
+            Resources.UnloadUnusedAssets();
+            System.GC.Collect();
+            LowMemoryHandled?.Invoke();
+        }
+
         public static bool IsAssetLoaded(AssetAddress address) => s_entries.ContainsKey(address);
+
+        /// <summary>Total references held on <paramref name="address"/> across ALL owners (0 if not resident).</summary>
+        public static int RefCount(AssetAddress address) => s_entries.TryGetValue(address, out var e) ? e.RefCount : 0;
 
         /// <summary>Clears all cached entries, instances and registered sources (default Resources re-added). Tests only.</summary>
         internal static void ResetForTests()
@@ -112,6 +183,7 @@ namespace PFound.ContentDelivery
             s_instances.Clear();
             s_sources.Clear();
             s_sources.Add(new ResourcesAssetSource());
+            s_deferredUnloads.Clear();
         }
 
         /// <summary>
@@ -154,6 +226,8 @@ namespace PFound.ContentDelivery
             {
                 cached.RefCount++;
                 AddLoaderRef(cached, loader);
+                // A re-load within the grace window revives the entry — cancel any pending deferred unload.
+                if (s_deferredUnloadFrames > 0) s_deferredUnloads.Cancel(address);
                 return cached.Asset as T;
             }
 

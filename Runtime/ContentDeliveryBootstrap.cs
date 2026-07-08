@@ -58,6 +58,11 @@ namespace PFound.ContentDelivery
 
             var source = new RemoteBundleAssetSource(catalog, transport, cacheDirectory, remoteBaseUrl, localBaseUrl, hasher);
             AssetManager.RegisterSource(source);
+
+            // Engine-lifecycle wiring: the frame pump for deferred unload + the Application.lowMemory hook, and
+            // late-binding of bundle-packed SpriteAtlases (Include-in-Build off). Both are idempotent.
+            ContentDeliveryRuntime.Install();
+            SpriteAtlasBinder.Enable();
             return source;
         }
 

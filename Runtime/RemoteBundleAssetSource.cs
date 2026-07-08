@@ -25,6 +25,10 @@ namespace PFound.ContentDelivery
         // Per-address closure held open so Release frees exactly what this load acquired.
         private readonly Dictionary<string, IReadOnlyList<CatalogBundle>> _held =
             new Dictionary<string, IReadOnlyList<CatalogBundle>>();
+        // Scene-bundle closures held resident by ticket id (a scene keeps its bundle loaded while the scene lives).
+        private readonly Dictionary<int, IReadOnlyList<CatalogBundle>> _heldScenes =
+            new Dictionary<int, IReadOnlyList<CatalogBundle>>();
+        private int _nextSceneTicket;
 
         /// <param name="baseUrl">CDN origin for Remote (post-launch-updatable) bundles.</param>
         /// <param name="localBaseUrl">
@@ -157,6 +161,59 @@ namespace PFound.ContentDelivery
             if (!address.IsValid || !_held.TryGetValue(address.Value, out var closure)) return;
             _held.Remove(address.Value);
             _registry.ReleaseClosure(closure);
+        }
+
+        /// <summary>
+        /// Provisions + loads the bundle (and its dependency closure) that packs the scene at
+        /// <paramref name="sceneAddress"/> and returns a ticket carrying the in-bundle <c>scenePath</c> the engine
+        /// scene loader needs, plus a token to release the bundle with. A scene is NOT a loadable
+        /// <see cref="Object"/> — its bundle must be resident for the engine's own scene load to find it — so this
+        /// keeps the closure resident until <see cref="ReleaseSceneBundle"/>. Use <see cref="ContentSceneLoader"/>
+        /// to load + unload the scene together with its bundle. Returns an invalid ticket if the address is unknown.
+        /// </summary>
+        public async UniTask<SceneBundleTicket> AcquireSceneBundleAsync(AssetAddress sceneAddress)
+        {
+            if (!sceneAddress.IsValid || !_catalog.TryResolveAsset(sceneAddress.Value, out var entry))
+                return SceneBundleTicket.Invalid;
+
+            var closure = _catalog.GetBundleClosure(entry.Bundle);
+            var bundle = await _registry.AcquireClosureAsync(closure);
+
+            string scenePath = ResolveScenePath(bundle, entry.AssetName, sceneAddress);
+            if (string.IsNullOrEmpty(scenePath))
+            {
+                _registry.ReleaseClosure(closure); // no scene in the bundle — don't pin it
+                return SceneBundleTicket.Invalid;
+            }
+
+            int token = ++_nextSceneTicket;
+            _heldScenes[token] = closure;
+            return new SceneBundleTicket(token, scenePath);
+        }
+
+        /// <summary>Releases the bundle a <see cref="AcquireSceneBundleAsync"/> ticket holds resident. Idempotent.</summary>
+        public void ReleaseSceneBundle(SceneBundleTicket ticket)
+        {
+            if (!ticket.IsValid || !_heldScenes.TryGetValue(ticket.Token, out var closure)) return;
+            _heldScenes.Remove(ticket.Token);
+            _registry.ReleaseClosure(closure);
+        }
+
+        // A scene bundle exposes its scenes as asset paths. Prefer the one whose scene name matches the catalog's
+        // in-bundle asset name; otherwise take the only/first path (warning when the bundle packs several).
+        private static string ResolveScenePath(AssetBundle bundle, string assetName, AssetAddress address)
+        {
+            string[] paths = bundle.GetAllScenePaths();
+            if (paths == null || paths.Length == 0) return null;
+
+            if (!string.IsNullOrEmpty(assetName))
+                for (int i = 0; i < paths.Length; i++)
+                    if (string.Equals(System.IO.Path.GetFileNameWithoutExtension(paths[i]), assetName, System.StringComparison.Ordinal))
+                        return paths[i];
+
+            if (paths.Length > 1)
+                Debug.LogWarning($"[ContentDelivery] Scene bundle for '{address}' packs {paths.Length} scenes; using '{paths[0]}'.");
+            return paths[0];
         }
     }
 }

@@ -1,6 +1,7 @@
 using System.Collections;
 using Cysharp.Threading.Tasks;
 using NUnit.Framework;
+using UnityEngine;
 using UnityEngine.TestTools;
 
 namespace PFound.ContentDelivery.Tests
@@ -8,7 +9,14 @@ namespace PFound.ContentDelivery.Tests
     public sealed class AssetManagerTests
     {
         [SetUp]
-        public void Reset() => AssetManager.ResetForTests();
+        public void Reset()
+        {
+            AssetManager.DeferredUnloadFrames = 0; // back to immediate-unload for each test
+            AssetManager.ResetForTests();
+        }
+
+        [TearDown]
+        public void Cleanup() => AssetManager.DeferredUnloadFrames = 0;
 
         [UnityTest]
         public IEnumerator Load_ResolvesCachesAndRefCounts() => UniTask.ToCoroutine(async () =>
@@ -116,6 +124,79 @@ namespace PFound.ContentDelivery.Tests
             AssetManager.Destroy(instance);
             Assert.IsFalse(AssetManager.IsAssetLoaded("prefab"), "destroying the instance releases the reference");
             CollectionAssert.Contains(fake.Released, "prefab");
+        });
+
+        [UnityTest]
+        public IEnumerator TotalRefCount_SumsAcrossOwners() => UniTask.ToCoroutine(async () =>
+        {
+            var fake = new FakeAssetSource();
+            fake.Add("x");
+            AssetManager.RegisterSource(fake);
+
+            Assert.AreEqual(0, AssetManager.RefCount("x"), "unresident address reports zero");
+            await AssetManager.LoadAssetAsync<TestAsset>("x", new AssetLoaderId("a")).Task;
+            await AssetManager.LoadAssetAsync<TestAsset>("x", new AssetLoaderId("b")).Task;
+            Assert.AreEqual(2, AssetManager.RefCount("x"), "total counts both owners");
+        });
+
+        [UnityTest]
+        public IEnumerator DeferredUnload_KeepsResidentThenReleasesOnPump() => UniTask.ToCoroutine(async () =>
+        {
+            AssetManager.DeferredUnloadFrames = 2;
+            var fake = new FakeAssetSource();
+            fake.Add("d");
+            AssetManager.RegisterSource(fake);
+
+            await AssetManager.LoadAssetAsync<TestAsset>("d").Task;
+            int frame = Time.frameCount;
+            AssetManager.UnloadAsset("d");
+
+            Assert.IsTrue(AssetManager.IsAssetLoaded("d"), "kept resident during the grace window");
+            CollectionAssert.DoesNotContain(fake.Released, "d", "source not released yet");
+
+            AssetManager.PumpDeferredUnloads(frame + 1); // still inside the window
+            Assert.IsTrue(AssetManager.IsAssetLoaded("d"));
+
+            AssetManager.PumpDeferredUnloads(frame + 2); // window elapsed
+            Assert.IsFalse(AssetManager.IsAssetLoaded("d"), "released once the window elapsed");
+            CollectionAssert.Contains(fake.Released, "d");
+        });
+
+        [UnityTest]
+        public IEnumerator DeferredUnload_ReloadWithinWindowRevives() => UniTask.ToCoroutine(async () =>
+        {
+            AssetManager.DeferredUnloadFrames = 3;
+            var fake = new FakeAssetSource();
+            fake.Add("r");
+            AssetManager.RegisterSource(fake);
+
+            await AssetManager.LoadAssetAsync<TestAsset>("r").Task;
+            int frame = Time.frameCount;
+            AssetManager.UnloadAsset("r");            // queued for deferred release
+
+            await AssetManager.LoadAssetAsync<TestAsset>("r").Task; // re-load within the window revives it
+            Assert.AreEqual(1, fake.LoadCalls, "revived from cache — no reload");
+
+            AssetManager.PumpDeferredUnloads(frame + 10); // well past the window
+            Assert.IsTrue(AssetManager.IsAssetLoaded("r"), "revived entry is not released");
+            CollectionAssert.DoesNotContain(fake.Released, "r");
+        });
+
+        [UnityTest]
+        public IEnumerator LowMemory_FlushesDeferredResidency() => UniTask.ToCoroutine(async () =>
+        {
+            AssetManager.DeferredUnloadFrames = 100; // long window — only a flush should release it
+            var fake = new FakeAssetSource();
+            fake.Add("m");
+            AssetManager.RegisterSource(fake);
+
+            await AssetManager.LoadAssetAsync<TestAsset>("m").Task;
+            AssetManager.UnloadAsset("m");
+            Assert.IsTrue(AssetManager.IsAssetLoaded("m"), "still within the long grace window");
+
+            AssetManager.HandleLowMemory(); // releases non-pinned residency immediately
+            Assert.IsFalse(AssetManager.IsAssetLoaded("m"), "deferred residency flushed under memory pressure");
+            CollectionAssert.Contains(fake.Released, "m");
         });
     }
 }

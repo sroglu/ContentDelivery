@@ -2,8 +2,9 @@
 
 Addressable content delivery: author assets into groups, build AssetBundles + a content catalog, ship
 them locally (StreamingAssets) or remotely (CDN), and load them at runtime by string address with
-per-owner reference counting. No MonoBehaviour host — `AssetManager` is a static seam; author + build
-in the editor, then call one initialize at startup.
+per-owner reference counting. `AssetManager` is a static seam (author + build in the editor, then call
+one initialize at startup); an optional `ContentDeliveryRuntime` host adds the frame pump for deferred
+unload and the `Application.lowMemory` hook.
 
 ## Quick reference
 
@@ -28,6 +29,10 @@ var hero = await loader.InstantiateAsync<Transform>("props/hero");
 | Owner-scoped loads | `AssetLoader : IDisposable` |
 | Sync catalog-driven load | `ContentCatalogService` (`Current`) |
 | Startup wiring | `ContentDeliveryBootstrap.InitializeAsync` |
+| Scenes from bundles | `ContentSceneLoader.LoadSceneAsync` → `LoadedContentScene` |
+| Bundle-packed SpriteAtlases | `SpriteAtlasBinder.Enable()` (auto via bootstrap) |
+| Memory pressure / grace unload | `AssetManager.DeferredUnloadFrames`, `HandleLowMemory` + `ContentDeliveryRuntime` |
+| Download policy | `DownloadSchedulerOptions` (split retry + stall watchdog), `DownloadSpeedMeter` |
 | Authoring (editor) | `AssetGroup`, `CatalogEditorConfig` SOs + `PFound/Content Delivery/…` menu |
 | Diagnostics | `ContentMemoryReporter.Capture(deep)` → `ContentMemoryReport` |
 

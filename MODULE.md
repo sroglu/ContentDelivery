@@ -45,7 +45,10 @@ All shipped assemblies are `autoReferenced: false` — a consumer references the
 - `AssetAddress` — string-key load address (implicit from `string`); `AssetReference<T>` — its serializable, inspector-friendly form.
 - `UnmanagedAssetAddress` — Burst-friendly `FixedString128Bytes` address (`ToManaged()`).
 - `AssetPhase` — `Essential` / `Early` / `Standard` / `Deferred` phased-delivery bands.
-- `ContentDeliveryBootstrap` — the wiring entry point; `DefaultTransport` seam.
+- `ContentDeliveryBootstrap` — the wiring entry point; `DefaultTransport` seam. Installs `ContentDeliveryRuntime` + enables `SpriteAtlasBinder`.
+- `ContentDeliveryRuntime` — optional `MonoBehaviour` host (hidden, `DontDestroyOnLoad`): pumps the deferred-unload queue each frame and forwards `Application.lowMemory` to `AssetManager.HandleLowMemory`. `Install()` / `Uninstall()`.
+- `SpriteAtlasBinder` — late-binds bundle-packed `SpriteAtlas`es (Include-in-Build off) by hooking `SpriteAtlasManager.atlasRequested` and loading the atlas from its bundle. `Enable(resolver)` / `Disable()`.
+- `ContentSceneLoader` (+ `SceneBundleTicket`, `LoadedContentScene`) — loads a scene packed in a content bundle: makes the bundle resident, drives `SceneManager` by the in-bundle scene path, and unloads scene + bundle together.
 - `ContentDeliveryPaths` — well-known StreamingAssets / cache locations.
 - `ContentPlatform` — active/editor platform folder + embedded/remote bundle path resolution.
 - `ContentMemoryReporter` → `ContentMemoryReport` (`AssetMemoryRow` / `BundleMemoryRow` / `LoaderRef`) — residency diagnostics.
@@ -56,7 +59,9 @@ All shipped assemblies are `autoReferenced: false` — a consumer references the
 - `Catalog` — in-memory address→asset→bundle graph; `TryResolveAsset`, `GetBundleClosure`, `GetPackClosure`, `AssetsUpToPhase`, `AssetsInPhase`, `PhasesUpTo`, `AssetsWithLabel`, `Version`.
 - `CatalogBundle` / `CatalogAsset` / `CatalogPack` / `BundleCompression` — catalog records.
 - `BundleProvisioner` — download → hash-verify → (LZMA-)decompress → content-addressed disk cache (1×).
-- `DownloadScheduler` (+ `DownloadSchedulerOptions`, `SchedulerProgress`, `SchedulerResult`, `SchedulerConcurrency`) — concurrent multi-bundle provisioning with retry/backoff + disk precheck.
+- `DownloadScheduler` (+ `DownloadSchedulerOptions`, `SchedulerProgress`, `SchedulerResult`, `SchedulerConcurrency`) — concurrent multi-bundle provisioning with a **split retry policy** (distinct transient-network vs integrity/corrupt budgets + backoffs), a per-transfer **stall watchdog** (`StallTimeout`), disk precheck, and an optional `DownloadSpeedMeter` feed.
+- `DownloadSpeedMeter` (`DownloadSpeedRating`) — classifies throughput Good/Bad against a byte/sec threshold and raises transition events (`RatingChanged` / `GoodDetected` / `BadDetected`).
+- `DeferredUnloadQueue<TKey>` — frame-delayed release queue (grace window before unload; `Enqueue` / `Cancel` / `Pump` / `Flush`); backs `AssetManager.DeferredUnloadFrames`.
 - `CatalogContentDownloader` (`CatalogContentResult`) — downloads every missing remote bundle for the active catalog.
 - `IDownloadTransport` — the thin HTTP fetch boundary; `ContentDeliveryException` (`Retryable`) + typed subclasses.
 - `RemoteContentConfig` — (origin, platform folder, catalog file name) coordinates; `IsOffline`, `IsUsable`, URL resolvers.
@@ -89,6 +94,15 @@ void RegisterSource(IAssetSource);      // inserts at the FRONT (index 0) — hi
 bool UnregisterSource(IAssetSource);
 bool IsAssetLoaded(AssetAddress);
 int  RefCountFor(AssetAddress, AssetLoaderId);
+int  RefCount(AssetAddress);            // TOTAL references across all owners (0 if not resident)
+
+// Deferred unload (optional): keep zero-ref entries resident for N frames (re-load within the window
+// revives them). ContentDeliveryRuntime pumps the queue; 0 = immediate unload (default).
+int  DeferredUnloadFrames { get; set; }
+void PumpDeferredUnloads(int currentFrame);   // release entries whose window elapsed (host-driven)
+void FlushDeferredUnloads();                   // release all pending now
+void HandleLowMemory();                        // flush non-pinned residency + UnloadUnusedAssets + GC
+event Action LowMemoryHandled;
 ```
 `AsyncAssetLoadHandle<T>` exposes `Status`, `IsDone` / `IsTerminal`, `Result`, `UniTask Task`,
 `Release()`, and is directly awaitable — the awaiter returns the asset, `null` on a clean miss, and
@@ -130,6 +144,44 @@ UniTask PreloadAsync(AssetPhase | int maxPhaseInclusive);                  // br
 UniTask PreloadPhasesSequentialAsync(AssetPhase | int maxPhaseInclusive);  // phase-by-phase, each gated on the last
 ```
 
+**Scenes from bundles — `ContentSceneLoader` / `RemoteBundleAssetSource`:**
+```csharp
+// Load a scene packed in a content bundle: provisions + loads its bundle, then drives SceneManager by the
+// in-bundle scene path. The handle owns the bundle reference until the scene is unloaded.
+static UniTask<LoadedContentScene> ContentSceneLoader.LoadSceneAsync(
+    RemoteBundleAssetSource source, AssetAddress sceneAddress, LoadSceneMode mode = Single);
+// LoadedContentScene: Scene, ScenePath, IsValid; UnloadAsync() (unloads scene + releases bundle), ReleaseBundleOnly()
+// Low-level seam: source.AcquireSceneBundleAsync(addr) → SceneBundleTicket (Token, ScenePath); source.ReleaseSceneBundle(ticket)
+```
+
+**Bundle-packed SpriteAtlases — `SpriteAtlasBinder` (static):**
+```csharp
+static void Enable(Func<string, AssetAddress> resolveAddress = null);  // hook SpriteAtlasManager.atlasRequested
+static void Disable();                                                 // default resolver: address == atlas tag
+// On a late-bound atlas request it loads the atlas (Include-in-Build off, packed into a bundle) via AssetManager
+// under the SpriteAtlasBinder.AtlasLoader owner and hands it to the engine callback.
+```
+
+**Download policy — `DownloadSchedulerOptions` / `DownloadSpeedMeter`:**
+```csharp
+// split retry: transient-network vs integrity(corrupt) get INDEPENDENT budgets/backoffs + a stall watchdog
+int      MaxItemRetries;         TimeSpan RetryBackoff;          // transient (timeout/reset/5xx), exponential
+int      MaxIntegrityRetries;    TimeSpan IntegrityRetryBackoff; // corrupt bytes (hash mismatch / decompress), fixed
+TimeSpan StallTimeout;           // per-attempt watchdog: no completion in the window → cancel + retry as transient
+DownloadSpeedMeter SpeedMeter;   // fed the aggregate bytes/sec each progress tick
+
+var meter = new DownloadSpeedMeter(slowThresholdBytesPerSecond);
+meter.RatingChanged += r => ...;  meter.BadDetected += ...;  meter.GoodDetected += ...;   // fire on transitions only
+meter.Sample(bytesPerSecond);              // or meter.Sample(elapsedSeconds, cumulativeBytes) with CheckInterval
+```
+
+**Residency under memory pressure — `AssetManager` + `ContentDeliveryRuntime`:**
+```csharp
+ContentDeliveryRuntime.Install();          // idempotent host (bootstrap calls it): frame pump + Application.lowMemory
+AssetManager.DeferredUnloadFrames = 2;     // opt into a grace window before unload
+// On Application.lowMemory the host calls AssetManager.HandleLowMemory() → flush deferred residency + sweep + GC.
+```
+
 **Diagnostics — `ContentMemoryReporter`:**
 ```csharp
 static ContentMemoryReport Capture(bool deep = false);   // deep also measures runtime memory via the Profiler
@@ -138,9 +190,16 @@ static ContentMemoryReport Capture(bool deep = false);   // deep also measures r
 
 ## Setup / wiring
 
-There is **no MonoBehaviour host and no `DontDestroyOnLoad`** — `AssetManager` is a static seam and
-`ContentCatalogService` is a plain C# singleton. The lifecycle is: author + build content in the
-editor, then call **one initialize** at app startup before the first load.
+`AssetManager` is a static seam and `ContentCatalogService` is a plain C# singleton — the core needs
+**no MonoBehaviour**. The lifecycle is: author + build content in the editor, then call **one
+initialize** at app startup before the first load.
+
+There is one **optional** engine-lifecycle host, `ContentDeliveryRuntime` (a hidden `DontDestroyOnLoad`
+`MonoBehaviour`, installed idempotently by `ContentDeliveryBootstrap.InitializeAsync`): it pumps the
+deferred-unload queue each frame and forwards `Application.lowMemory` to `AssetManager.HandleLowMemory`.
+It is only needed when you set `AssetManager.DeferredUnloadFrames > 0` or want the low-memory hook —
+immediate-unload use (the default) needs nothing. `ContentCatalogService`-only apps can call
+`ContentDeliveryRuntime.Install()` themselves.
 
 ### 1. Author content (editor)
 
@@ -241,7 +300,9 @@ ContentDelivery/
 │  │  ├─ CatalogBinary.cs · CatalogCodec.cs     # binary/JSON catalog decode
 │  │  ├─ ContentCatalogIndex.cs      # resolution index (alias/sub-asset)
 │  │  ├─ BundleProvisioner.cs        # download → verify → decompress → 1× disk cache
-│  │  ├─ DownloadScheduler.cs        # concurrent multi-bundle provisioning + retry/backoff
+│  │  ├─ DownloadScheduler.cs        # concurrent provisioning + split retry (network/integrity) + stall watchdog
+│  │  ├─ DownloadSpeedMeter.cs       # Good/Bad throughput classification + transition events
+│  │  ├─ DeferredUnloadQueue.cs      # frame-delayed release queue (grace window before unload)
 │  │  ├─ CatalogContentDownloader.cs # download all missing remote bundles for a catalog
 │  │  ├─ CatalogAcquisitionPlan.cs   # embedded vs cached vs download decision (CatalogSource)
 │  │  ├─ RemoteContentConfig.cs · ContentEnvironments.cs · AssetBundleLayout.cs
@@ -254,6 +315,9 @@ ContentDelivery/
 │  ├─ AssetManager.cs · AssetLoader.cs · AssetLoaderId.cs
 │  ├─ AsyncAssetLoadHandle.cs · IAssetSource.cs (+ ResourcesAssetSource)
 │  ├─ RemoteBundleAssetSource.cs · LoadedBundleRegistry.cs · IBundleMemorySource.cs
+│  ├─ ContentSceneLoader.cs          # scene-from-bundle load (SceneBundleTicket, LoadedContentScene)
+│  ├─ SpriteAtlasBinder.cs           # late-bind bundle-packed SpriteAtlases (atlasRequested)
+│  ├─ ContentDeliveryRuntime.cs      # optional host: deferred-unload pump + Application.lowMemory hook
 │  ├─ ContentCatalogService.cs · SyncBundleRegistry.cs · EmbeddedCatalogReader.cs · CatalogJson.cs
 │  ├─ ContentDeliveryBootstrap.cs · ContentDeliveryPaths.cs · ContentPlatform.cs
 │  ├─ AssetAddress.cs · UnmanagedAssetAddress.cs · AssetReference.cs · AssetPhase.cs
