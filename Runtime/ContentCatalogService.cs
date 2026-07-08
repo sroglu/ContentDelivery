@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
@@ -36,6 +35,10 @@ namespace PFound.ContentDelivery
     /// (<see cref="ContentCatalogIndex"/>), the blocking bundle registry (<see cref="SyncBundleRegistry"/>) and the
     /// remote acquisition/download flow. A new catalog replaces the prior one entirely (bundles unloaded, index
     /// rebuilt — no merge). Pure C# service object (not a MonoBehaviour); main-thread only.
+    /// <para>
+    /// Dormant synchronous featureset-parity capability: the async <see cref="AssetManager"/> /
+    /// <see cref="RemoteBundleAssetSource"/> path is the runtime; no production code uses this sync service.
+    /// </para>
     /// </summary>
     public sealed class ContentCatalogService
     {
@@ -82,21 +85,10 @@ namespace PFound.ContentDelivery
             if (options == null) throw new ArgumentNullException(nameof(options));
 
             Current?.Teardown();
-            var next = new ContentCatalogService(catalogFileNameWithoutExtension, catalog, Normalize(options));
+            var next = new ContentCatalogService(
+                catalogFileNameWithoutExtension, catalog, RemoteCatalogResolver.Normalize(options));
             Current = next;
             return next;
-        }
-
-        private static ContentServiceOptions Normalize(ContentServiceOptions o)
-        {
-            string platform = o.PlatformFolder ?? ContentPlatform.ActivePlatformFolder();
-            return new ContentServiceOptions
-            {
-                Transport = o.Transport ?? ContentDeliveryBootstrap.DefaultTransport,
-                Hasher = o.Hasher ?? new XxHash3ContentHasher(),
-                PlatformFolder = platform,
-                CacheDirectory = o.CacheDirectory ?? ContentPlatform.GetRemoteAssetBundlePath(platform),
-            };
         }
 
         private void Teardown()
@@ -214,46 +206,14 @@ namespace PFound.ContentDelivery
             RemoteContentConfig remoteConfig, ContentServiceOptions options, CancellationToken cancellationToken = default)
         {
             if (options == null) throw new ArgumentNullException(nameof(options));
-            var opts = Normalize(options);
-            string required = remoteConfig.CatalogFileName;
-            string nameNoExt = Path.GetFileNameWithoutExtension(required);
 
-            var embedded = await EmbeddedCatalogReader.TryReadEmbeddedCatalogAsync(opts.PlatformFolder);
-            string cachedPath = Path.Combine(opts.CacheDirectory, required);
-            bool cached = File.Exists(cachedPath);
+            var result = await RemoteCatalogResolver.ResolveAsync(remoteConfig, options, cancellationToken);
+            if (!result.Success)
+                return new CatalogLoadResult(false, result.Source, result.Error);
 
-            var plan = CatalogAcquisitionPlan.Decide(required, embedded.Found ? embedded.FileName : null, cached);
-
-            try
-            {
-                Catalog catalog;
-                switch (plan)
-                {
-                    case CatalogSource.Embedded:
-                        catalog = embedded.Catalog;
-                        break;
-                    case CatalogSource.Cached:
-                        catalog = DecodeCatalogBytes(File.ReadAllBytes(cachedPath));
-                        break;
-                    default:
-                        byte[] bytes = await opts.Transport.DownloadBytesAsync(remoteConfig.GetCatalogUrl(), cancellationToken);
-                        Directory.CreateDirectory(opts.CacheDirectory);
-                        File.WriteAllBytes(cachedPath, bytes);
-                        catalog = DecodeCatalogBytes(bytes);
-                        break;
-                }
-
-                Initialize(nameNoExt, catalog, opts);
-                return new CatalogLoadResult(true, plan, null);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception e)
-            {
-                return new CatalogLoadResult(false, plan, e.Message);
-            }
+            string nameNoExt = Path.GetFileNameWithoutExtension(remoteConfig.CatalogFileName);
+            Initialize(nameNoExt, result.Catalog, options);
+            return new CatalogLoadResult(true, result.Source, null);
         }
 
         /// <summary>
@@ -270,8 +230,5 @@ namespace PFound.ContentDelivery
                 _options.Transport, _options.CacheDirectory, remoteConfig, _options.Hasher);
             return await downloader.DownloadCatalogContentAsync(_index.Catalog, progress, cancellationToken).AsUniTask();
         }
-
-        private static Catalog DecodeCatalogBytes(byte[] bytes) =>
-            CatalogCodec.Decode(bytes, b => CatalogJson.Parse(Encoding.UTF8.GetString(b)));
     }
 }

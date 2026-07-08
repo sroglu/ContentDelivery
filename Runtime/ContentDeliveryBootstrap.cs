@@ -1,11 +1,29 @@
 using System;
 using System.Text;
+using System.Threading;
 using Cysharp.Threading.Tasks;
 using PFound.ContentDelivery.Core;
 using PFound.ContentDelivery.Transport;
 
 namespace PFound.ContentDelivery
 {
+    /// <summary>Outcome of an async, fail-soft ContentDelivery boot with catalog fallback.</summary>
+    public readonly struct ContentDeliveryInitResult
+    {
+        public readonly bool Success;
+        public readonly RemoteBundleAssetSource Source; // null on failure
+        public readonly CatalogSource Origin;           // which branch the catalog came from: Embedded | Cached | Download
+        public readonly string Error;                   // null on success
+
+        public ContentDeliveryInitResult(bool success, RemoteBundleAssetSource source, CatalogSource origin, string error)
+        {
+            Success = success;
+            Source = source;
+            Origin = origin;
+            Error = error;
+        }
+    }
+
     /// <summary>
     /// Entry point that wires the remote content system up: picks the default download transport and, given a
     /// catalog, registers a <see cref="RemoteBundleAssetSource"/> as the primary <see cref="IAssetSource"/>.
@@ -82,6 +100,42 @@ namespace PFound.ContentDelivery
             if (environments == null) throw new ArgumentNullException(nameof(environments));
             return InitializeAsync(
                 environments.ResolveRemoteBaseUrl(), catalogUrl, cacheDirectory, transport, localBaseUrl, hasher);
+        }
+
+        /// <summary>
+        /// Async, fail-soft boot with catalog fallback: resolves the catalog named by <paramref name="remoteConfig"/>
+        /// the cheapest way — embedded if it matches, else cached, else downloaded (via
+        /// <see cref="RemoteCatalogResolver.ResolveAsync"/>) — and on success registers a
+        /// <see cref="RemoteBundleAssetSource"/> over it and installs the engine-lifecycle wiring. On a network/IO
+        /// failure it returns an unsuccessful result carrying the message instead of throwing, so a consumer never
+        /// has to touch the dormant sync <see cref="ContentCatalogService"/>.
+        /// </summary>
+        public static async UniTask<ContentDeliveryInitResult> InitializeWithFallbackAsync(
+            RemoteContentConfig remoteConfig, ContentServiceOptions options = null, CancellationToken cancellationToken = default)
+        {
+            options = options ?? new ContentServiceOptions();
+
+            var result = await RemoteCatalogResolver.ResolveAsync(remoteConfig, options, cancellationToken);
+            if (!result.Success)
+                return new ContentDeliveryInitResult(false, null, result.Source, result.Error);
+
+            // Resolve the wiring exactly as the resolver's Normalize does, so the source uses the same transport,
+            // cache root and hasher the catalog was acquired with.
+            IDownloadTransport transport = options.Transport ?? DefaultTransport;
+            string platform = options.PlatformFolder ?? ContentPlatform.ActivePlatformFolder();
+            string cacheDirectory = options.CacheDirectory ?? ContentPlatform.GetRemoteAssetBundlePath(platform);
+            IContentHasher hasher = options.Hasher ?? new XxHash3ContentHasher();
+
+            var source = new RemoteBundleAssetSource(
+                result.Catalog, transport, cacheDirectory, remoteConfig.OriginUrl, localBaseUrl: null, hasher);
+            AssetManager.RegisterSource(source);
+
+            // Engine-lifecycle wiring: the frame pump for deferred unload + the Application.lowMemory hook, and
+            // late-binding of bundle-packed SpriteAtlases. Both are idempotent.
+            ContentDeliveryRuntime.Install();
+            SpriteAtlasBinder.Enable();
+
+            return new ContentDeliveryInitResult(true, source, result.Source, null);
         }
     }
 }

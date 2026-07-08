@@ -37,7 +37,8 @@ All shipped assemblies are `autoReferenced: false` — a consumer references the
 - `AssetManager` — static, process-wide async resolution + a ref-counted asset cache over the source chain.
 - `IAssetSource` — the resolve seam; `ResourcesAssetSource` is the built-in fallback.
 - `RemoteBundleAssetSource` — the primary source: resolves through the catalog, provisions and loads bundles, phased preload.
-- `ContentCatalogService` — app-owned singleton for *synchronous* catalog-driven load/instantiate.
+- `ContentCatalogService` — app-owned singleton for *synchronous* catalog-driven load/instantiate. **Dormant synchronous featureset-parity capability**: all runtime loading is async (`AssetManager` / `RemoteBundleAssetSource`); no production code uses the sync service.
+- `RemoteCatalogResolver` (+ `CatalogResolveResult`) — the shared, fail-soft remote→cache→embedded catalog resolution (decode only; does NOT init the sync service). Both the async runtime and the sync service route through it.
 - `AssetLoader : IDisposable` — owner-scoped handle that releases everything it took on `Dispose`.
 - `AssetLoaderId` — per-owner ref-count key (`FixedString64Bytes`); `Global` for un-owned calls.
 - `AsyncAssetLoadHandle<T>` — allocation-free awaitable/pollable value handle; carries `Release()`.
@@ -53,6 +54,7 @@ All shipped assemblies are `autoReferenced: false` — a consumer references the
 - `ContentPlatform` — active/editor platform folder + embedded/remote bundle path resolution.
 - `ContentMemoryReporter` → `ContentMemoryReport` (`AssetMemoryRow` / `BundleMemoryRow` / `LoaderRef`) — residency diagnostics.
 - `ContentServiceOptions`, `CatalogLoadResult` — `ContentCatalogService` init/acquire types.
+- `ContentDeliveryInitResult` — outcome of `ContentDeliveryBootstrap.InitializeWithFallbackAsync` (async, fail-soft boot with catalog fallback).
 - `IBundleMemorySource`, `LoadedBundleRegistry` (internal), `SyncBundleRegistry`, `EmbeddedCatalogReader`, `CatalogJson`, `UnityWebRequestTransport` (in `Transport/`).
 
 **`PFound.ContentDelivery.Core`**
@@ -115,10 +117,17 @@ new AssetLoader(FixedString64Bytes id);           // labels the owner for diagno
 void Dispose();   // destroys its instances, then releases every address it still holds
 ```
 
-**Sync loads — `ContentCatalogService` (`Current` singleton):**
+**Shared catalog resolution — `RemoteCatalogResolver` (static):**
+```csharp
+static UniTask<CatalogResolveResult> ResolveAsync(RemoteContentConfig, ContentServiceOptions, CancellationToken = default);
+// fail-soft embedded → cached → download; decode only, does NOT init the sync service.
+// CatalogResolveResult: bool Success; Catalog Catalog; CatalogSource Source; string Error.
+```
+
+**Sync loads — `ContentCatalogService` (`Current` singleton, dormant parity capability):**
 ```csharp
 static ContentCatalogService Initialize(string catalogFileNameNoExt, Catalog, ContentServiceOptions);
-static UniTask<CatalogLoadResult> AcquireCatalogAsync(RemoteContentConfig, ContentServiceOptions, CancellationToken); // fail-soft embedded → cached → download
+static UniTask<CatalogLoadResult> AcquireCatalogAsync(RemoteContentConfig, ContentServiceOptions, CancellationToken); // fail-soft embedded → cached → download (routes through RemoteCatalogResolver)
 UniTask<CatalogContentResult>     DownloadCatalogContentAsync(RemoteContentConfig, IProgress<SchedulerProgress>, CancellationToken);
 T          LoadAsset<T>(AssetAddress, int count = 1) where T : Object;   // blocks; null on a clean miss
 void       Unload(AssetAddress);
@@ -136,11 +145,18 @@ static UniTask<RemoteBundleAssetSource> InitializeAsync(
     IDownloadTransport transport = null, string localBaseUrl = null, IContentHasher hasher = null);
 static UniTask<RemoteBundleAssetSource> InitializeAsync(
     ContentEnvironments environments, /* …same optionals… */);   // env-selected CDN origin
+static UniTask<ContentDeliveryInitResult> InitializeWithFallbackAsync(
+    RemoteContentConfig remoteConfig, ContentServiceOptions options = null, CancellationToken = default);
+// async, fail-soft boot: resolves the catalog (embedded → cached → download) then registers the source +
+// installs runtime wiring; returns { Success, RemoteBundleAssetSource Source, CatalogSource Origin, Error }
+// so a consumer never touches the sync ContentCatalogService.
 ```
 
 **Phased preload — `RemoteBundleAssetSource`:**
 ```csharp
 UniTask PreloadAsync(AssetPhase | int maxPhaseInclusive);                  // bring content up to a phase onto disk
+UniTask PreloadAsync(AssetPhase | int maxPhaseInclusive, IProgress<SchedulerProgress> progress, CancellationToken = default);
+// concurrent (scheduler) fetch + retry with byte-level aggregate progress; the no-progress overloads route here too
 UniTask PreloadPhasesSequentialAsync(AssetPhase | int maxPhaseInclusive);  // phase-by-phase, each gated on the last
 ```
 

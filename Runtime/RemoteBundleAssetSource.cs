@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using System.IO;
+using System.Threading;
 using Cysharp.Threading.Tasks;
 using Unity.Profiling;
 using UnityEngine;
@@ -22,6 +24,8 @@ namespace PFound.ContentDelivery
         private readonly Catalog _catalog;
         private readonly LoadedBundleRegistry _registry;
         private readonly BundleProvisioner _provisioner;
+        // The downloaded-bundle cache root, kept so the concurrent prewarm scheduler can run its disk checks against it.
+        private readonly string _cacheDirectory;
         // Per-address closure held open so Release frees exactly what this load acquired.
         private readonly Dictionary<string, IReadOnlyList<CatalogBundle>> _held =
             new Dictionary<string, IReadOnlyList<CatalogBundle>>();
@@ -41,6 +45,7 @@ namespace PFound.ContentDelivery
             string localBaseUrl = null, IContentHasher hasher = null)
         {
             _catalog = catalog;
+            _cacheDirectory = cacheDirectory;
             _provisioner = new BundleProvisioner(
                 transport, cacheDirectory, baseUrl, localBaseUrl ?? ContentDeliveryPaths.StreamingAssetsContentUrl,
                 hasher: hasher ?? new XxHash3ContentHasher());
@@ -109,24 +114,54 @@ namespace PFound.ContentDelivery
 
         /// <summary>
         /// Provisions (download → verify → disk-cache, without loading into memory) every bundle backing an asset
-        /// whose phase is at or below <paramref name="maxPhaseInclusive"/>, dependencies included. This is the
-        /// phased-delivery primitive: <c>PreloadAsync((int)AssetPhase.Essential)</c> brings boot content onto disk
-        /// before the rest, so a later <see cref="LoadAsync{T}"/> is a cache hit with no network wait.
+        /// whose phase is at or below <paramref name="maxPhaseInclusive"/>, dependencies included, concurrently
+        /// through the <see cref="DownloadScheduler"/> (parallel fetch + retry) and reporting byte-level aggregate
+        /// progress. This is the phased-delivery primitive: <c>PreloadAsync((int)AssetPhase.Essential, ...)</c> brings
+        /// boot content onto disk before the rest, so a later <see cref="LoadAsync{T}"/> is a cache hit with no
+        /// network wait. Only remote, not-yet-cached bundles are fetched (deduplicated); a fully-cached set is a no-op.
         /// </summary>
-        public async UniTask PreloadAsync(int maxPhaseInclusive)
+        public async UniTask PreloadAsync(
+            int maxPhaseInclusive, System.IProgress<SchedulerProgress> progress, CancellationToken cancellationToken = default)
         {
-            var seen = new HashSet<string>(System.StringComparer.Ordinal);
+            var queue = BuildPreloadQueue(maxPhaseInclusive);
+            if (queue.Count == 0) return; // everything is embedded or already on disk — nothing to fetch
+
+            var scheduler = new DownloadScheduler(
+                _provisioner, new DownloadSchedulerOptions { CacheDirectory = _cacheDirectory });
+            await scheduler.ProvisionAsync(queue, progress, cancellationToken).AsUniTask();
+        }
+
+        /// <summary>Convenience overload taking the <see cref="AssetPhase"/> band directly.</summary>
+        public UniTask PreloadAsync(
+            AssetPhase maxPhaseInclusive, System.IProgress<SchedulerProgress> progress, CancellationToken cancellationToken = default) =>
+            PreloadAsync((int)maxPhaseInclusive, progress, cancellationToken);
+
+        /// <summary>No-progress prewarm: same concurrent+retry fetch as the byte-progress overload, without reporting.</summary>
+        public UniTask PreloadAsync(int maxPhaseInclusive) => PreloadAsync(maxPhaseInclusive, progress: null, default);
+
+        /// <summary>Convenience overload taking the <see cref="AssetPhase"/> band directly.</summary>
+        public UniTask PreloadAsync(AssetPhase maxPhaseInclusive) => PreloadAsync((int)maxPhaseInclusive);
+
+        // The deduplicated download queue for a phase band: for every asset up to the band, each bundle in its
+        // closure that is remote AND not yet cached, deduped by bundle name (mirrors CatalogContentDownloader's
+        // BuildDownloadQueue/TryEnqueue semantics — remote + missing + first-seen).
+        private List<CatalogBundle> BuildPreloadQueue(int maxPhaseInclusive)
+        {
+            var queue = new List<CatalogBundle>();
+            var enqueued = new HashSet<string>(System.StringComparer.Ordinal);
             foreach (var asset in _catalog.AssetsUpToPhase(maxPhaseInclusive))
             {
                 var closure = _catalog.GetBundleClosure(asset.Bundle);
                 for (int i = 0; i < closure.Count; i++)
-                    if (seen.Add(closure[i].Hash))
-                        await _provisioner.EnsureBundleAsync(closure[i]).AsUniTask();
+                {
+                    var bundle = closure[i];
+                    if (bundle.Local || File.Exists(_provisioner.GetCachePath(bundle))) continue;
+                    if (!enqueued.Add(bundle.Name)) continue;
+                    queue.Add(bundle);
+                }
             }
+            return queue;
         }
-
-        /// <summary>Convenience overload taking the <see cref="AssetPhase"/> band directly.</summary>
-        public UniTask PreloadAsync(AssetPhase maxPhaseInclusive) => PreloadAsync((int)maxPhaseInclusive);
 
         /// <summary>
         /// Like <see cref="PreloadAsync(int)"/>, but provisions one phase at a time IN ASCENDING ORDER, gating each
