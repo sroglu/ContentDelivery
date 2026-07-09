@@ -50,6 +50,12 @@ namespace PFound.ContentDelivery.Editor
         /// <summary>Builds an EXPLICIT group set (the manifest is the caller); config supplies platform/env/offline.</summary>
         public static ContentBuildReport Build(CatalogEditorConfig config, IReadOnlyList<AssetGroup> groups)
         {
+            // Production drops dev-only groups (AssetGroup.ExcludeInProduction) HERE — the single choke, so BOTH the
+            // manifest build and the raw Build(config) / App Build menu honor config.Mode uniformly (dev-only content
+            // never leaks into a production build regardless of which entry point ran).
+            if (groups != null && config.Mode == BuildMode.Production)
+                groups = BuildScopeFilter.Apply(groups, BuildScope.ExcludeInProd);
+
             if (groups == null || groups.Count == 0)
             {
                 Debug.LogWarning("[ContentDelivery] No groups to build.");

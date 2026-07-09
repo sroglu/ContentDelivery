@@ -252,6 +252,30 @@ namespace PFound.ContentDelivery.Editor
                 yield return AuthoringIssue.Warning("No environments defined — online builds have no CDN origin to target.");
             else if (!Environments.Any(e => string.Equals(e.Name, ActiveEnvironment, System.StringComparison.Ordinal)))
                 yield return AuthoringIssue.Error($"Active Environment '{ActiveEnvironment}' is not one of the environments — pick a valid one.");
+
+            // Mode ↔ active-environment posture (non-blocking footgun guard): a Production build usually targets the
+            // remote CDN, a Development build a local/dev origin. Heuristic on the active BaseUrl scheme (no explicit
+            // per-env prod flag exists). Guards BOTH build paths since Mode is honored in the shared runner.
+            string activeUrl = ActiveBaseUrl();
+            if (!string.IsNullOrEmpty(activeUrl))
+            {
+                bool remote = LooksLikeRemoteOrigin(activeUrl);
+                if (Mode == BuildMode.Production && !remote)
+                    yield return AuthoringIssue.Warning($"Production mode but active environment '{ActiveEnvironment}' looks local/dev ({activeUrl}) — a production build usually targets the remote CDN.");
+                else if (Mode == BuildMode.Development && remote)
+                    yield return AuthoringIssue.Warning($"Development mode but active environment '{ActiveEnvironment}' points at a remote CDN ({activeUrl}) — a dev build would publish to production.");
+            }
+        }
+
+        // A network/prod-looking origin: http(s) and not localhost. file:// and localhost read as local/dev; empty = offline.
+        static bool LooksLikeRemoteOrigin(string baseUrl)
+        {
+            if (string.IsNullOrEmpty(baseUrl)) return false;
+            string u = ResolveTokens(baseUrl);
+            if (u.StartsWith("file://", System.StringComparison.OrdinalIgnoreCase)) return false;
+            if (u.Contains("localhost") || u.Contains("127.0.0.1")) return false;
+            return u.StartsWith("http://", System.StringComparison.OrdinalIgnoreCase)
+                || u.StartsWith("https://", System.StringComparison.OrdinalIgnoreCase);
         }
     }
 }

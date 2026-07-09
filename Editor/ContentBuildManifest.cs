@@ -71,17 +71,17 @@ namespace PFound.ContentDelivery.Editor
         }
 
         /// <summary>
-        /// Resolves the current scope, drops dev-only groups in <see cref="BuildMode.Production"/>,
-        /// and hands the exact group list to <see cref="CatalogEditorBuildRunner.Build(CatalogEditorConfig, IReadOnlyList{AssetGroup})"/>.
+        /// Resolves the current scope and hands the exact group list to
+        /// <see cref="CatalogEditorBuildRunner.Build(CatalogEditorConfig, IReadOnlyList{AssetGroup})"/>. The
+        /// production dev-only filter (<see cref="BuildMode.Production"/> → <see cref="AssetGroup.ExcludeInProduction"/>)
+        /// lives inside that shared runner, so it applies uniformly to every build entry point — not here.
         /// </summary>
         [FoldoutGroup("Build"), Button("Build (resolve scope → CatalogEditorBuildRunner)", ButtonSizes.Medium)]
         void BuildSelected()
         {
             if (!Config) { Debug.LogError("[ContentDelivery] Manifest has no CatalogEditorConfig — assign one."); return; }
             var groups = ResolveGroups(this, Selection, SelectedSetId);
-            if (Config.Mode == BuildMode.Production)
-                groups = BuildScopeFilter.Apply(groups, BuildScope.ExcludeInProd);   // drop dev-only in production
-            CatalogEditorBuildRunner.Build(Config, groups);
+            CatalogEditorBuildRunner.Build(Config, groups);   // Mode→ExcludeInProd applied inside the shared runner
         }
 
         /// <summary>
