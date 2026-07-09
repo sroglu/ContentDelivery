@@ -132,6 +132,13 @@ namespace PFound.ContentDelivery.Editor
                 if (File.Exists(source)) File.Copy(source, Path.Combine(embeddedDir, entry.Hash), true);
             }
 
+            // Clear stale catalog artifacts first (old hash names / formats, or a legacy builder's catalog left in
+            // this shared folder) so the embedded package holds EXACTLY ONE catalog — the one the pointer names.
+            // Bundles are hash-named (never start with "catalog"), so they are untouched; the pointer is rewritten below.
+            foreach (var stale in Directory.GetFiles(embeddedDir))
+                if (Path.GetFileName(stale).StartsWith("catalog", System.StringComparison.OrdinalIgnoreCase))
+                    File.Delete(stale);
+
             // ONE catalog file, produced HERE — the single catalog-file producer for the whole pipeline. PFound binary
             // form, LZMA-compressed, named with its content hash last: catalog_<gameId>_v<ver>_b<build>_<dev|prod>_<hash>.lzma.
             // The SAME bytes go to the embedded package AND (online) the publish/CDN dir, so no .json catalog exists
