@@ -17,6 +17,9 @@ namespace PFound.ContentDelivery.Editor
         public string BaseUrl;
     }
 
+    /// <summary>Which dev/prod posture an App Build targets (see <see cref="AssetGroup.ExcludeInProduction"/>).</summary>
+    public enum BuildMode { Development, Production }
+
     /// <summary>
     /// The editor build-configuration for content delivery, centered on <see cref="OfflineBuild"/>:
     /// <b>true</b> embeds every group into StreamingAssets (no CDN); <b>false</b> honors per-group distribution and
@@ -58,10 +61,8 @@ namespace PFound.ContentDelivery.Editor
         // Plain enum popup for the big BuildTarget enum (Odin's enum selector opens the broken window).
         [FoldoutGroup("Build", expanded: true), CustomValueDrawer(nameof(DrawBuildPlatform))]
         public BuildTarget BuildPlatform = BuildTarget.Android;
-        [FoldoutGroup("Build"), Tooltip("Which groups the build includes.")]
-        public BuildScope Scope = BuildScope.AllGroups;
-        [FoldoutGroup("Build"), ShowIf(nameof(ScopeIsSelected)), Tooltip("Groups built when Scope = OnlySelected.")]
-        public List<AssetGroup> GroupsToBuild = new List<AssetGroup>();
+        [FoldoutGroup("Build"), Tooltip("Production drops dev-only groups (AssetGroup.ExcludeInProduction) from a build.")]
+        public BuildMode Mode = BuildMode.Development;
         [FoldoutGroup("Build"), Tooltip("Game identifier folded into the catalog file name / upload path.")]
         public string GameId = "game";
 
@@ -71,11 +72,6 @@ namespace PFound.ContentDelivery.Editor
         int LastBuiltDisplay => CatalogBuildNumber;
         [FoldoutGroup("Catalog Version"), ShowInInspector, ReadOnly, DisplayAsString, LabelText("Next Catalog (preview)")]
         string NextCatalogPreview => CatalogNameVersion.Compose(GameId, AppVersion(), CatalogBuildNumber + 1);
-        [FoldoutGroup("Catalog Version")]
-        [InfoBox("(appVersion, build#) postfix orders catalogs — the runtime rejects an older one (rollback / stale " +
-                 "pointer). Build# bumps automatically on each App Build.")]
-        [Button("App Build (offline / online per config)", ButtonSizes.Medium)]
-        void AppBuildButton() => CatalogEditorBuildRunner.Build(this);
 
         // Per-platform embedded build table (Platform → ✓/✗ + size). Cheap (dir stat + tiny pointer read) so it
         // lives in the inspector; no catalog decode. This is your LOCAL build state — NOT whether it's on a CDN.
@@ -162,8 +158,6 @@ namespace PFound.ContentDelivery.Editor
             CdnUpload.UploadPublishDirectoryAsync(new DirectoryUploader(dest), publish).GetAwaiter().GetResult();
             Debug.Log($"[ContentDelivery] Uploaded {publish} → {dest}");
         }
-
-        bool ScopeIsSelected => Scope == BuildScope.OnlySelected;
 
         // Editor token resolution — {PROJECT} = the PROJECT ROOT folder (matches the legacy convention for
         // file:// dev servers), not the app product name.

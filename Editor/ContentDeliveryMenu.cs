@@ -13,12 +13,6 @@ namespace PFound.ContentDelivery.Editor
         [MenuItem("PFound/Content Delivery/Build Content (All Groups)")]
         public static void BuildAllGroups() => BuildWithScope(BuildScope.AllGroups);
 
-        [MenuItem("PFound/Content Delivery/Build Content (Selected Groups)")]
-        public static void BuildSelectedGroups() => BuildWithScope(BuildScope.OnlySelected);
-
-        [MenuItem("PFound/Content Delivery/Build Content (Production — exclude dev-only)")]
-        public static void BuildProduction() => BuildWithScope(BuildScope.ExcludeInProd);
-
         [MenuItem("PFound/Content Delivery/Analyze Duplicate Dependencies")]
         public static void AnalyzeDuplicates()
         {

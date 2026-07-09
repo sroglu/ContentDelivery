@@ -40,20 +40,24 @@ namespace PFound.ContentDelivery.Editor
             ClearEmbedded(platform);
         }
 
-        /// <summary>Builds content per <paramref name="config"/> and stages the embedded package. Returns the report.</summary>
+        /// <summary>Builds content per <paramref name="config"/> (all project groups) and stages the embedded package.</summary>
         public static ContentBuildReport Build(CatalogEditorConfig config)
         {
             var groups = GatherGroups(config);
-            if (groups.Count == 0)
+            return Build(config, groups);
+        }
+
+        /// <summary>Builds an EXPLICIT group set (the manifest is the caller); config supplies platform/env/offline.</summary>
+        public static ContentBuildReport Build(CatalogEditorConfig config, IReadOnlyList<AssetGroup> groups)
+        {
+            if (groups == null || groups.Count == 0)
             {
-                Debug.LogWarning($"[ContentDelivery] No AssetGroup in scope {config.Scope} — nothing to build.");
+                Debug.LogWarning("[ContentDelivery] No groups to build.");
                 return default;
             }
 
             // Monotonic version stamp: each App Build gets a fresh build number, so CatalogFileName() (used by
             // StageEmbeddedPackage + the pointer) names a strictly-newer catalog than the last one.
-            config.BumpBuildNumber();
-
             // Offline packages must be directly loadable from StreamingAssets, so build UNCOMPRESSED (Unity LZ4);
             // online builds keep the LZMA transfer form the runtime decompresses into its cache.
             var compression = config.OfflineBuild ? BundleCompression.None : BundleCompression.Lzma;
@@ -64,11 +68,11 @@ namespace PFound.ContentDelivery.Editor
             Catalog catalog = CatalogJson.Parse(report.CatalogJson);
             if (config.OfflineBuild) catalog = ForceAllLocal(catalog);
 
+            config.BumpBuildNumber();
             StageEmbeddedPackage(report, catalog, config);
 
             AssetDatabase.Refresh();
-            Debug.Log($"[ContentDelivery] App build [{(config.OfflineBuild ? "OFFLINE" : "online")}] " +
-                      $"{report.BundleCount} bundle(s) → embedded {config.PlatformFolder()} package.");
+            Debug.Log($"[ContentDelivery] Built {report.BundleCount} bundle(s) [{groups.Count} group(s), {(config.OfflineBuild ? "OFFLINE" : "online")}] → embedded {config.PlatformFolder()}.");
             return report;
         }
 
@@ -130,12 +134,7 @@ namespace PFound.ContentDelivery.Editor
 
         // ----- group gathering -----
 
-        private static List<AssetGroup> GatherGroups(CatalogEditorConfig config)
-        {
-            var all = ContentDeliveryMenu.LoadAllGroups();
-            ICollection<AssetGroup> selected = config.Scope == BuildScope.OnlySelected ? config.GroupsToBuild : null;
-            return BuildScopeFilter.Apply(all, config.Scope, selected);
-        }
+        private static List<AssetGroup> GatherGroups(CatalogEditorConfig config) => ContentDeliveryMenu.LoadAllGroups();
 
         private static CatalogEditorConfig FindConfig()
         {
