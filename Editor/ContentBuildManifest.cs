@@ -122,30 +122,31 @@ namespace PFound.ContentDelivery.Editor
             // 3) Drift vs last embedded build (informational): selected addresses AND build mode vs the last catalog.
             string platform = Config ? Config.PlatformFolder() : ContentPlatform.ActivePlatformFolder();
             var lastBuilt = ReadEmbeddedCatalog(platform);
-            if (lastBuilt != null)
+            if (lastBuilt.Found)
             {
-                var built = lastBuilt.AllAssets.Select(a => a.Address).Where(a => !string.IsNullOrEmpty(a)).ToHashSet(StringComparer.Ordinal);
+                var built = lastBuilt.Catalog.AllAssets.Select(a => a.Address).Where(a => !string.IsNullOrEmpty(a)).ToHashSet(StringComparer.Ordinal);
                 var selectedAddrs = resolved.SelectMany(g => g.Entries).Select(e => e.Address).Where(a => !string.IsNullOrEmpty(a)).ToHashSet(StringComparer.Ordinal);
                 foreach (var a in selectedAddrs) if (!built.Contains(a)) yield return AuthoringIssue.Error($"Selected but not in the last build: '{a}' — rebuild.");
                 foreach (var a in built) if (!selectedAddrs.Contains(a)) yield return AuthoringIssue.Warning($"Last build has extra content beyond the selected scope: '{a}' (harmless, wider than expected).");
 
-                // Build-mode drift: the last embedded build's stamped mode vs the config's current Mode.
-                if (Config && !string.IsNullOrEmpty(lastBuilt.BuildMode))
+                // Build-mode drift: the mode token is parsed from the last built catalog's FILE NAME (metadata lives
+                // in the name, not the catalog content).
+                string lastMode = CatalogNameVersion.Parse(lastBuilt.FileName).Mode;
+                if (Config && !string.IsNullOrEmpty(lastMode))
                 {
-                    string cur = Config.Mode == BuildMode.Production ? "production" : "development";
-                    if (!string.Equals(lastBuilt.BuildMode, cur, StringComparison.OrdinalIgnoreCase))
-                        yield return AuthoringIssue.Warning($"Last embedded build was '{lastBuilt.BuildMode}' but Config.Mode is now '{cur}' — rebuild to match.");
+                    string cur = Config.Mode == BuildMode.Production ? "prod" : "dev";
+                    if (!string.Equals(lastMode, cur, StringComparison.OrdinalIgnoreCase))
+                        yield return AuthoringIssue.Warning($"Last embedded build was '{lastMode}' but Config.Mode is now '{cur}' — rebuild to match.");
                 }
             }
         }
 
-        // Reads the last embedded catalog for a platform, or null if none built. Editor-only desktop
-        // StreamingAssets file read — sync-over-async is acceptable at this boundary.
-        static Catalog ReadEmbeddedCatalog(string platform)
+        // Reads the last embedded catalog (+ its file name) for a platform, or NotFound if none built. Editor-only
+        // desktop StreamingAssets file read — sync-over-async is acceptable at this boundary.
+        static EmbeddedCatalogResult ReadEmbeddedCatalog(string platform)
         {
-            if (!ContentPlatform.HasEmbeddedBundles(platform)) return null;
-            var res = EmbeddedCatalogReader.TryReadEmbeddedCatalogAsync(platform).GetAwaiter().GetResult();
-            return res.Found ? res.Catalog : null;
+            if (!ContentPlatform.HasEmbeddedBundles(platform)) return EmbeddedCatalogResult.NotFound;
+            return EmbeddedCatalogReader.TryReadEmbeddedCatalogAsync(platform).GetAwaiter().GetResult();
         }
 
         // Plain-popup drawers (avoid Odin's broken selector window on this Unity version — see the module convention).

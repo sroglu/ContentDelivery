@@ -501,7 +501,7 @@ namespace PFound.ContentDelivery.Core.Tests
             var packs = new[] { new CatalogPack { Name = "core", Bundles = new[] { "ui", "shared" } } };
             var back = CatalogBinary.Read(CatalogBinary.Write(new Catalog(bundles, assets, "v-bin-1", packs)));
 
-            AssertEqual("v-bin-1", back.Version, "version preserved");
+            AssertEqual("v-bin-1", back.ContentHash, "content hash preserved");
             Assert(back.TryGetPack("core", out var core), "pack survives the round-trip");
             AssertEqual(2, core.Bundles.Length, "pack member count preserved");
             AssertEqual("ui", core.Bundles[0], "pack member order preserved");

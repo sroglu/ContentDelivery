@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
 using UnityEngine;
+using PFound.Compression;
 using PFound.ContentDelivery.Core;
 
 namespace PFound.ContentDelivery.Editor
@@ -74,16 +75,25 @@ namespace PFound.ContentDelivery.Editor
             string outputDir = OutputDirectory;
             var report = BundleBuildPipeline.Build(groups, outputDir, config.BuildPlatform.ToBuildTarget(), hasher: null, compression: compression);
 
-            // Stamp dev/prod into the catalog CONTENT so the artifact self-identifies (the file name stays
-            // stable — runtime resolution unchanged). Offline additionally forces every bundle Local. Single choke.
-            string buildMode = config.Mode == BuildMode.Production ? "production" : "development";
-            Catalog catalog = StampCatalog(CatalogJson.Parse(report.CatalogJson), buildMode, config.OfflineBuild);
+            // Offline forces every bundle Local (the offline catalog has zero remote entries); otherwise the
+            // pipeline's catalog passes through.
+            Catalog parsed = CatalogJson.Parse(report.CatalogJson);
+            if (config.OfflineBuild) parsed = ForceAllLocal(parsed);
 
-            config.CommitBuildNumber(config.ResolveNextBuildNumber());   // override (min=last) or auto-increment
+            config.CommitBuildNumber(config.ResolveNextBuildNumber());   // finalize the build number first
+
+            // ONE SOURCE: the catalog's content metadata is filled from the SAME config values that compose the file
+            // name (CatalogFileName) — so the name tokens and the content fields can never disagree.
+            Catalog catalog = new Catalog(
+                parsed.AllBundles, parsed.AllAssets, parsed.ContentHash, parsed.AllPacks,
+                appVersion: config.AppVersion(), buildNumber: config.CatalogBuildNumber,
+                platform: config.PlatformFolder(), mode: config.ModeToken());
+
             StageEmbeddedPackage(report, catalog, config);
 
             AssetDatabase.Refresh();
-            Debug.Log($"[ContentDelivery] Built {report.BundleCount} bundle(s) [{groups.Count} group(s), {buildMode}, {(config.OfflineBuild ? "OFFLINE" : "online")}] → embedded {config.PlatformFolder()}.");
+            string mode = config.Mode == BuildMode.Production ? "prod" : "dev";
+            Debug.Log($"[ContentDelivery] Built {report.BundleCount} bundle(s) [{groups.Count} group(s), {mode}, {(config.OfflineBuild ? "OFFLINE" : "online")}] → embedded {config.PlatformFolder()}.");
             return report;
         }
 
@@ -122,29 +132,28 @@ namespace PFound.ContentDelivery.Editor
                 if (File.Exists(source)) File.Copy(source, Path.Combine(embeddedDir, entry.Hash), true);
             }
 
-            string catalogFileName = config.CatalogFileName();
-            File.WriteAllText(Path.Combine(embeddedDir, catalogFileName), CatalogJson.ToJson(
-                new List<CatalogBundle>(catalog.AllBundles), new List<CatalogAsset>(catalog.AllAssets),
-                new List<CatalogPack>(catalog.AllPacks), catalog.Version, buildMode: catalog.BuildMode));
+            // ONE binary .lzma catalog: serialize to the PFound binary form, LZMA-compress, and name it with its
+            // content hash last (same shape as bundles). The pointer names the exact file; runtime reads it back via
+            // CatalogCodec (auto-detects LZMA → PFCB binary). No .json text form, no content-metadata field.
+            byte[] stored = Lzma.Compress(CatalogBinary.Write(catalog));
+            string catalogHash = new XxHash3ContentHasher().Compute(stored);
+            string catalogFileName = config.CatalogFileName(catalogHash);
+            File.WriteAllBytes(Path.Combine(embeddedDir, catalogFileName), stored);
 
             File.WriteAllText(Path.Combine(embeddedDir, AssetBundleLayout.EmbeddedCatalogPointerFileName), catalogFileName);
         }
 
-        // Returns a copy of the catalog with buildMode stamped into its content. forceLocal (offline) rewrites
-        // every bundle as Local so the offline catalog has zero remote entries; otherwise bundles pass through.
-        private static Catalog StampCatalog(Catalog catalog, string buildMode, bool forceLocal)
+        // Rewrites every bundle as Local — the offline catalog has zero remote entries.
+        private static Catalog ForceAllLocal(Catalog catalog)
         {
             var bundles = new List<CatalogBundle>();
             foreach (var b in catalog.AllBundles)
-                bundles.Add(forceLocal
-                    ? new CatalogBundle
-                    {
-                        Name = b.Name, Hash = b.Hash, UncompressedHash = b.UncompressedHash,
-                        Dependencies = b.Dependencies, Local = true, Compression = b.Compression,
-                    }
-                    : b);
-            return new Catalog(bundles, new List<CatalogAsset>(catalog.AllAssets), catalog.Version,
-                new List<CatalogPack>(catalog.AllPacks), buildMode);
+                bundles.Add(new CatalogBundle
+                {
+                    Name = b.Name, Hash = b.Hash, UncompressedHash = b.UncompressedHash,
+                    Dependencies = b.Dependencies, Local = true, Compression = b.Compression,
+                });
+            return new Catalog(bundles, new List<CatalogAsset>(catalog.AllAssets), catalog.ContentHash, new List<CatalogPack>(catalog.AllPacks));
         }
 
         // ----- group gathering -----

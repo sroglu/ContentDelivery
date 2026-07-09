@@ -93,8 +93,8 @@ namespace PFound.ContentDelivery.Editor
             }
         }
 
-        // Per-platform embedded build table (Platform → ✓/✗ + size + catalog + build mode). dir stat + pointer
-        // read + a light head-decode of the catalog for its stamped buildMode (§1.4c). LOCAL build state — NOT the CDN.
+        // Per-platform embedded build table (Platform → ✓/✗ + size + catalog + build mode). dir stat + pointer read;
+        // the mode is parsed from the catalog FILE NAME (all metadata lives in the name). LOCAL build state — NOT the CDN.
         [FoldoutGroup("Build Readiness (LOCAL only — not the CDN)", expanded: true), ShowInInspector, ReadOnly]
         [DictionaryDrawerSettings(KeyLabel = "Platform", ValueLabel = "Embedded build (shipped, offline)", IsReadOnly = true)]
         Dictionary<string, string> BuildReadiness
@@ -108,7 +108,7 @@ namespace PFound.ContentDelivery.Editor
                     if (!ContentPlatform.HasEmbeddedBundles(p)) { d[p] = "✗ none"; continue; }
                     string pointer = System.IO.Path.Combine(dir, AssetBundleLayout.EmbeddedCatalogPointerFileName);
                     string cat = System.IO.File.Exists(pointer) ? System.IO.File.ReadAllText(pointer).Trim() : null;
-                    string mode = cat != null ? ReadCatalogBuildMode(System.IO.Path.Combine(dir, cat)) : null;
+                    string mode = cat != null ? CatalogNameVersion.Parse(cat).Mode : null;   // mode from the FILE NAME, not content
                     d[p] = $"✓ ({FormatSize(DirFilesSize(dir))})"
                          + (cat != null ? $"  {cat}" : "  (no catalog pointer)")
                          + (mode != null ? $"  [{mode}]" : "");
@@ -117,15 +117,6 @@ namespace PFound.ContentDelivery.Editor
             }
         }
 
-        // Head-decode just the top-level buildMode string from a catalog file (JsonUtility ignores the bundle/asset
-        // arrays), or null when absent (old catalogs / unreadable). §1.4c: surfaces the stamped dev/prod posture.
-        [System.Serializable] private struct CatalogModeDto { public string version; public string buildMode; }
-        static string ReadCatalogBuildMode(string catalogPath)
-        {
-            if (!File.Exists(catalogPath)) return null;
-            var dto = JsonUtility.FromJson<CatalogModeDto>(File.ReadAllText(catalogPath));
-            return string.IsNullOrEmpty(dto.buildMode) ? null : dto.buildMode;
-        }
 
         [FoldoutGroup("Build Readiness (LOCAL only — not the CDN)")]
         [Button("Check Remote / CDN availability (network)")]
@@ -298,14 +289,22 @@ namespace PFound.ContentDelivery.Editor
         }
 
         /// <summary>
-        /// The catalog file name this config publishes: <c>catalog_&lt;gameId&gt;_v&lt;appVersion&gt;_b&lt;build&gt;_&lt;dev|prod&gt;.json</c>.
-        /// Uses the CURRENT <see cref="CatalogBuildNumber"/> — call <see cref="CommitBuildNumber"/> first. See <see cref="CatalogNameVersion"/>.
+        /// The config-predictable catalog file name (NO content hash): <c>catalog_&lt;gameId&gt;_v&lt;appVersion&gt;_b&lt;build&gt;_&lt;dev|prod&gt;.lzma</c>.
+        /// Uses the CURRENT <see cref="CatalogBuildNumber"/> — call <see cref="CommitBuildNumber"/> first. The staged
+        /// embedded file additionally carries the content hash (see <see cref="CatalogFileName(string)"/>); the pointer
+        /// names the real file, so the hash-less form here is what the config can predict (e.g. for the remote origin).
         /// </summary>
         public string CatalogFileName() => CatalogNameVersion.Compose(GameId, AppVersion(), CatalogBuildNumber, ModeToken());
 
-        /// <summary>The dev/prod token appended to the catalog file name for a human glance (§1.4e); the machine-readable
-        /// source of truth stays the catalog-content <c>buildMode</c> stamp (§1.4c).</summary>
-        string ModeToken() => Mode == BuildMode.Production ? "prod" : "dev";
+        /// <summary>The full staged catalog name INCLUDING the content <paramref name="contentHash"/>:
+        /// <c>catalog_…_&lt;dev|prod&gt;_&lt;hash&gt;.lzma</c>. Only the build knows the hash, so this is the name written to
+        /// disk + into the pointer; runtime discovers it via the pointer, not by predicting it.</summary>
+        public string CatalogFileName(string contentHash) =>
+            CatalogNameVersion.Compose(GameId, AppVersion(), CatalogBuildNumber, ModeToken(), contentHash);
+
+        /// <summary>The dev/prod token — written into BOTH the catalog file name and the catalog content Mode field
+        /// (from this one source, so they cannot diverge). "prod" / "dev".</summary>
+        internal string ModeToken() => Mode == BuildMode.Production ? "prod" : "dev";
 
         /// <summary>The platform folder name for <see cref="BuildPlatform"/> (matches the runtime layout).</summary>
         public string PlatformFolder() => ContentPlatform.EditorPlatformFolder(BuildPlatform.ToBuildTarget());

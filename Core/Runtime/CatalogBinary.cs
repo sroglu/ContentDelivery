@@ -11,15 +11,13 @@ namespace PFound.ContentDelivery.Core
     /// Smaller and faster to parse than the JSON form for large catalogs; the JSON form stays the
     /// human-readable / build-debug format. Pure Core (BCL only), engine-free.
     /// Layout: magic "PFCB" · format version byte · catalog version string · bundle[] · asset[] · pack[].
-    /// NOTE: <see cref="Catalog.BuildMode"/> is intentionally NOT carried here — it is a JSON-format concern
-    /// (the build pipeline only ever emits JSON catalogs). A binary round-trip leaves BuildMode null; adding it
-    /// would need a format-version bump that invalidates existing v3 binary caches, for a field this path never
-    /// writes. Bump to v4 only if the pipeline ever starts emitting binary catalogs.
+    /// The shipped catalog IS this binary form, so its build metadata (content hash + app version / build number /
+    /// platform / dev-prod mode) is serialized HERE, mirrored by the file-name tokens (<see cref="CatalogNameVersion"/>).
     /// </summary>
     public static class CatalogBinary
     {
         private const uint Magic = 0x42434650; // 'P''F''C''B'
-        private const byte FormatVersion = 3;  // v2 added per-asset Labels; v3 adds the pack[] section
+        private const byte FormatVersion = 4;  // v2 added Labels; v3 added pack[]; v4 adds app metadata (appVersion/build/platform/mode) + renames the version field to the content hash
 
         public static byte[] Write(Catalog catalog)
         {
@@ -33,7 +31,12 @@ namespace PFound.ContentDelivery.Core
             {
                 w.Write(Magic);
                 w.Write(FormatVersion);
-                w.Write(catalog.Version ?? string.Empty);
+                // Build metadata (v4): content hash + app-level fields, from the one config source.
+                w.Write(catalog.ContentHash ?? string.Empty);
+                w.Write(catalog.AppVersion ?? string.Empty);
+                w.Write(catalog.BuildNumber);
+                w.Write(catalog.Platform ?? string.Empty);
+                w.Write(catalog.Mode ?? string.Empty);
 
                 w.Write(bundles.Count);
                 foreach (var b in bundles)
@@ -88,8 +91,15 @@ namespace PFound.ContentDelivery.Core
                 if (format != FormatVersion)
                     throw new ContentDeliveryException("Unsupported binary catalog format version: " + format + ".");
 
-                string version = r.ReadString();
-                if (version.Length == 0) version = null;
+                string contentHash = r.ReadString();
+                if (contentHash.Length == 0) contentHash = null;
+                string appVersion = r.ReadString();
+                if (appVersion.Length == 0) appVersion = null;
+                int buildNumber = r.ReadInt32();
+                string platform = r.ReadString();
+                if (platform.Length == 0) platform = null;
+                string mode = r.ReadString();
+                if (mode.Length == 0) mode = null;
 
                 int bundleCount = r.ReadInt32();
                 var bundles = new CatalogBundle[bundleCount];
@@ -140,7 +150,7 @@ namespace PFound.ContentDelivery.Core
                     packs[i] = pack;
                 }
 
-                return new Catalog(bundles, assets, version, packs);
+                return new Catalog(bundles, assets, contentHash, packs, appVersion, buildNumber, platform, mode);
             }
         }
     }

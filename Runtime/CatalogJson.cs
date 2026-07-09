@@ -27,7 +27,7 @@ namespace PFound.ContentDelivery
         private struct PackDto { public string name; public string[] bundles; }
 
         [Serializable]
-        private struct CatalogDto { public string version; public string buildMode; public BundleDto[] bundles; public AssetDto[] assets; public PackDto[] packs; }
+        private struct CatalogDto { public string contentHash; public string appVersion; public int buildNumber; public string platform; public string mode; public BundleDto[] bundles; public AssetDto[] assets; public PackDto[] packs; }
 
         /// <summary>Builds a <see cref="Catalog"/> from a JSON document.</summary>
         public static Catalog Parse(string json)
@@ -82,9 +82,11 @@ namespace PFound.ContentDelivery
                 };
             }
 
-            // buildMode is optional — absent on catalogs built before the field existed (⇒ null).
-            string buildMode = string.IsNullOrEmpty(dto.buildMode) ? null : dto.buildMode;
-            return new Catalog(bundles, assets, dto.version, packs, buildMode);
+            string contentHash = string.IsNullOrEmpty(dto.contentHash) ? null : dto.contentHash;
+            string appVersion = string.IsNullOrEmpty(dto.appVersion) ? null : dto.appVersion;
+            string platform = string.IsNullOrEmpty(dto.platform) ? null : dto.platform;
+            string mode = string.IsNullOrEmpty(dto.mode) ? null : dto.mode;
+            return new Catalog(bundles, assets, contentHash, packs, appVersion, dto.buildNumber, platform, mode);
         }
 
         /// <summary>
@@ -94,15 +96,20 @@ namespace PFound.ContentDelivery
         /// </summary>
         public static string ToJson(
             IReadOnlyList<CatalogBundle> bundles, IReadOnlyList<CatalogAsset> assets,
-            IReadOnlyList<CatalogPack> packs = null, string version = null, string buildMode = null, bool prettyPrint = true)
+            IReadOnlyList<CatalogPack> packs = null, string contentHash = null,
+            string appVersion = null, int buildNumber = 0, string platform = null, string mode = null,
+            bool prettyPrint = true)
         {
             if (bundles == null) throw new ArgumentNullException(nameof(bundles));
             if (assets == null) throw new ArgumentNullException(nameof(assets));
 
             var dto = new CatalogDto
             {
-                version = version,
-                buildMode = buildMode,
+                contentHash = contentHash,
+                appVersion = appVersion,
+                buildNumber = buildNumber,
+                platform = platform,
+                mode = mode,
                 bundles = new BundleDto[bundles.Count],
                 assets = new AssetDto[assets.Count],
                 packs = new PackDto[packs?.Count ?? 0],

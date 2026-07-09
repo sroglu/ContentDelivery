@@ -66,12 +66,12 @@ namespace PFound.ContentDelivery.Tests
             };
             var assets = new System.Collections.Generic.List<CatalogAsset>();
 
-            var versioned = CatalogJson.Parse(CatalogJson.ToJson(bundles, assets, version: "v-123"));
-            Assert.AreEqual("v-123", versioned.Version);
+            var versioned = CatalogJson.Parse(CatalogJson.ToJson(bundles, assets, contentHash: "v-123"));
+            Assert.AreEqual("v-123", versioned.ContentHash);
 
-            // Absent version parses as null/empty, not a crash — the pointer is optional.
+            // Absent content hash parses as null/empty, not a crash — it is optional.
             var unversioned = CatalogJson.Parse(@"{""bundles"":[],""assets"":[]}");
-            Assert.IsTrue(string.IsNullOrEmpty(unversioned.Version));
+            Assert.IsTrue(string.IsNullOrEmpty(unversioned.ContentHash));
         }
 
         [Test]

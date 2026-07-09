@@ -3,7 +3,7 @@ using System;
 namespace PFound.ContentDelivery.Core
 {
     /// <summary>
-    /// The version stamped into a catalog file name: <c>catalog_&lt;gameId&gt;_v&lt;appVersion&gt;_b&lt;build&gt;[_&lt;mode&gt;].json</c>.
+    /// The version stamped into a catalog file name: <c>catalog_&lt;gameId&gt;_v&lt;appVersion&gt;_b&lt;build&gt;[_&lt;mode&gt;][_&lt;hash&gt;].lzma</c>.
     /// The <see cref="AppVersion"/> (the player's <c>Application.version</c>) scopes a catalog to an app release; the
     /// monotonic <see cref="Build"/> counter orders catalogs within/across releases. Ordering is
     /// (appVersion, build) so a resolver can reject an OLDER catalog (rollback / stale pointer) — a downgrade guard.
@@ -27,14 +27,18 @@ namespace PFound.ContentDelivery.Core
         public static readonly CatalogNameVersion None = default; // Parsed == false
 
         /// <summary>
-        /// Builds the versioned catalog file name: <c>catalog_&lt;gameId&gt;_v&lt;appVersion&gt;_b&lt;build&gt;[_&lt;mode&gt;].json</c>.
+        /// Builds the catalog file name — ONE binary <c>.lzma</c> file that carries ALL metadata in its name:
+        /// <c>catalog_&lt;gameId&gt;_v&lt;appVersion&gt;_b&lt;build&gt;[_&lt;mode&gt;][_&lt;hash&gt;].lzma</c>.
         /// <paramref name="appVersion"/> underscores → '-' (delimiter-safe). <paramref name="mode"/> (e.g. "dev"/"prod")
-        /// is appended after the build so dev &amp; prod builds have distinct names; omit (null) for an unmoded name.
+        /// distinguishes dev &amp; prod builds; <paramref name="hash"/> is the catalog's content hash (its identity) and
+        /// goes LAST — same shape as bundles (<c>bundlepack_…_&lt;hash&gt;.lzma</c>). Both are optional (omit → no token):
+        /// the config emits a hash-less name it can predict, the build stamps the real hash.
         /// </summary>
-        public static string Compose(string gameId, string appVersion, int build, string mode = null)
+        public static string Compose(string gameId, string appVersion, int build, string mode = null, string hash = null)
         {
             string modeToken = string.IsNullOrEmpty(mode) ? string.Empty : $"_{mode}";
-            return $"catalog_{gameId}_v{Sanitize(appVersion)}_b{build}{modeToken}.json";
+            string hashToken = string.IsNullOrEmpty(hash) ? string.Empty : $"_{hash}";
+            return $"catalog_{gameId}_v{Sanitize(appVersion)}_b{build}{modeToken}{hashToken}.lzma";
         }
 
         private static string Sanitize(string appVersion) =>
@@ -49,18 +53,25 @@ namespace PFound.ContentDelivery.Core
         {
             if (string.IsNullOrEmpty(catalogFileName)) return None;
 
-            const string ext = ".json";
-            string name = catalogFileName.EndsWith(ext, StringComparison.Ordinal)
-                ? catalogFileName.Substring(0, catalogFileName.Length - ext.Length)
-                : catalogFileName;
+            // Strip the extension (.lzma — the current single-file form; .json — legacy embedded catalogs).
+            string name = catalogFileName;
+            if (name.EndsWith(".lzma", StringComparison.Ordinal)) name = name.Substring(0, name.Length - 5);
+            else if (name.EndsWith(".json", StringComparison.Ordinal)) name = name.Substring(0, name.Length - 5);
 
             int bAt = name.LastIndexOf("_b", StringComparison.Ordinal);
             if (bAt < 0) return None;
-            // After "_b": the build digits, then an OPTIONAL "_<mode>" token (e.g. "12" or "12_prod").
+            // After "_b": the build digits, then OPTIONAL "_<mode>" and "_<hash>" tokens (e.g. "12", "12_prod",
+            // or "12_prod_<hash>"). mode = the first token after the build; any further token is the content hash.
             string tail = name.Substring(bAt + 2);
-            int modeAt = tail.IndexOf('_');
-            string buildText = modeAt >= 0 ? tail.Substring(0, modeAt) : tail;
-            string mode = modeAt >= 0 ? tail.Substring(modeAt + 1) : null;
+            int us1 = tail.IndexOf('_');
+            string buildText = us1 >= 0 ? tail.Substring(0, us1) : tail;
+            string afterBuild = us1 >= 0 ? tail.Substring(us1 + 1) : null;  // "<mode>" or "<mode>_<hash>"
+            string mode = afterBuild;
+            if (afterBuild != null)
+            {
+                int us2 = afterBuild.IndexOf('_');
+                if (us2 >= 0) mode = afterBuild.Substring(0, us2);          // drop the trailing _<hash>
+            }
             if (buildText.Length == 0 || !int.TryParse(buildText, out int build)) return None;
 
             string head = name.Substring(0, bAt);              // catalog_<gameId>_v<appVersion>
