@@ -58,7 +58,7 @@ All shipped assemblies are `autoReferenced: false` — a consumer references the
 - `IBundleMemorySource`, `LoadedBundleRegistry` (internal), `SyncBundleRegistry`, `EmbeddedCatalogReader`, `CatalogJson`, `UnityWebRequestTransport` (in `Transport/`).
 
 **`PFound.ContentDelivery.Core`**
-- `Catalog` — in-memory address→asset→bundle graph; `TryResolveAsset`, `GetBundleClosure`, `GetPackClosure`, `AssetsUpToPhase`, `AssetsInPhase`, `PhasesUpTo`, `AssetsWithLabel`, `Version`.
+- `Catalog` — in-memory address→asset→bundle graph; `TryResolveAsset`, `GetBundleClosure`, `GetPackClosure`, `AssetsUpToPhase`, `AssetsInPhase`, `PhasesUpTo`, `AssetsWithLabel`. Carries build metadata: `ContentHash` (content-integrity id, formerly `Version`), `AppVersion`, `BuildNumber`, `Platform`, `Mode` — mirrored by the catalog file-name tokens, both filled from one config source.
 - `CatalogBundle` / `CatalogAsset` / `CatalogPack` / `BundleCompression` — catalog records.
 - `BundleProvisioner` — download → hash-verify → (LZMA-)decompress → content-addressed disk cache (1×).
 - `DownloadScheduler` (+ `DownloadSchedulerOptions`, `SchedulerProgress`, `SchedulerResult`, `SchedulerConcurrency`) — concurrent multi-bundle provisioning with a **split retry policy** (distinct transient-network vs integrity/corrupt budgets + backoffs), a per-transfer **stall watchdog** (`StallTimeout`), disk precheck, and an optional `DownloadSpeedMeter` feed.
@@ -77,7 +77,7 @@ All shipped assemblies are `autoReferenced: false` — a consumer references the
 - `ContentBuildManifest` (`ContentSet`, `BuildSelectionMode`) — curated set-based build entry point; `ResolveGroups`.
 - `CatalogEditorConfig` (`ContentEnvironmentEntry`, `BuildMode`) — the build "how": platform, mode, env, catalog versioning.
 - `BundleBuildPipeline` (`ContentBuildReport`, `BundleReportEntry`) — the SBP build.
-- `CatalogBuilder` — catalog JSON emission; `ContentDeliveryMenu` / `CatalogEditorBuildRunner` — menu entry points.
+- `CatalogBuilder` — builds the catalog document (in-memory); `CatalogEditorBuildRunner` is the **single** on-disk catalog producer (one binary `.lzma`, see §2). `ContentDeliveryMenu` / `CatalogEditorBuildRunner` — menu entry points.
 - `BuildScope` / `BuildScopeFilter`, `BundleDuplicateAnalyzer`, `ContentBuildReportExporter`.
 - `EditorFastPathMode` (`[InitializeOnLoad]`) + `EditorAssetSource` + `EditorAddressMap` — the play-mode fast path.
 - `ICdnUploader` + `DirectoryUploader` / `FtpUploader` / `BunnyCdnUploader` / `S3Uploader`, `CdnUpload`.
@@ -263,15 +263,28 @@ Run a menu item under `PFound/Content Delivery/`:
 - `Analyze Duplicate Dependencies` — reports assets implicitly embedded in more than one bundle.
 
 The build runs on the **Scriptable Build Pipeline** (`BundleBuildPipeline` → `ContentPipeline`):
-groups become `AssetBundleBuild`s, each output is content-addressed by its hash, and the runtime
-catalog JSON is emitted. Output goes to `<project>/ContentBuild/`; **Local** bundles + the catalog are
-staged into `Assets/StreamingAssets/PFoundContent/`, **Remote** bundles land in `publish/` for upload
-to the CDN origin. Bundle bytes are LZMA-compressed for transfer by default (`BundleCompression.Lzma`,
-Unity-uncompressed underneath) — smaller downloads than Unity's LZ4; the runtime decompresses.
+groups become `AssetBundleBuild`s, each bundle output is content-addressed by its hash. Output goes to
+`<project>/ContentBuild/`. Bundle bytes are LZMA-compressed for transfer by default
+(`BundleCompression.Lzma`, Unity-uncompressed underneath); the runtime decompresses.
 
-Path constants live in `ContentDeliveryPaths`: `ContentFolderName = "PFoundContent"`,
-`CatalogFileName = "catalog.json"`, `StreamingAssetsContentDirectory`/`StreamingAssetsContentUrl`,
-`DefaultCacheDirectory` = `persistentDataPath/PFoundContent/cache`.
+**The catalog is a single binary `.lzma` file.** `CatalogEditorBuildRunner` is the one and only catalog
+producer (`BundleBuildPipeline` builds the document in-memory but writes no catalog file). Its name
+carries every metadata token, hash last:
+`catalog_<gameId>_v<appVersion>_b<build>_<dev|prod>_<hash>.lzma`, and the same metadata is serialized
+inside the catalog content (`CatalogBinary` v4) — both filled from the one `CatalogEditorConfig` source,
+so name ⇄ content can't diverge. The **same** `.lzma` bytes are staged into
+`Assets/StreamingAssets/AssetBundles/<platform>/` (embedded) and `publish/` (remote/CDN); there is **no
+`.json` catalog anywhere**. **Local** bundles ship embedded, **Remote** bundles go to `publish/` for
+upload. A stale-catalog sweep keeps exactly one catalog in the embedded folder.
+
+**Pointer-driven resolution** (embedded + remote): each staged catalog is named by a pointer file, so the
+runtime never predicts the hash-stamped name — `embedded-catalog-pointer.txt` (StreamingAssets) and
+`remote-catalog-pointer.txt` (publish/CDN, uploaded LAST). `RemoteCatalogResolver` reads the remote
+pointer to discover the current catalog; `EmbeddedCatalogReader` reads the embedded one.
+
+Cache path lives in `ContentDeliveryPaths` (`DefaultCacheDirectory` =
+`persistentDataPath/PFoundContent/cache`). (The old `CatalogFileName = "catalog.json"` const was removed
+— catalogs are hash-named `.lzma`, discovered via pointer.)
 
 ### 3. Initialize once at startup
 
