@@ -124,20 +124,18 @@ namespace PFound.ContentDelivery.Editor
             string embeddedDir = Path.Combine(Application.streamingAssetsPath, AssetBundleLayout.AssetBundlesFolder, config.PlatformFolder());
             Directory.CreateDirectory(embeddedDir);
 
+            // The EXACT set of files this package should contain. Everything else in the folder is swept at the end so
+            // the embedded package never accumulates stale bundles/catalogs across builds (esp. large uncompressed
+            // offline blobs from a prior build, or a foreign builder's leftovers).
+            var keep = new HashSet<string>(System.StringComparer.Ordinal);
+
             foreach (var entry in report.Bundles)
             {
                 // Offline promotes every bundle to embedded; online embeds only the Local ones.
                 if (!config.OfflineBuild && !entry.Local) continue;
                 string source = Path.Combine(entry.Local ? report.StreamingAssetsDirectory : report.PublishDirectory, entry.Hash);
-                if (File.Exists(source)) File.Copy(source, Path.Combine(embeddedDir, entry.Hash), true);
+                if (File.Exists(source)) { File.Copy(source, Path.Combine(embeddedDir, entry.Hash), true); keep.Add(entry.Hash); }
             }
-
-            // Clear stale catalog artifacts first (old hash names / formats, or a legacy builder's catalog left in
-            // this shared folder) so the embedded package holds EXACTLY ONE catalog — the one the pointer names.
-            // Bundles are hash-named (never start with "catalog"), so they are untouched; the pointer is rewritten below.
-            foreach (var stale in Directory.GetFiles(embeddedDir))
-                if (Path.GetFileName(stale).StartsWith("catalog", System.StringComparison.OrdinalIgnoreCase))
-                    File.Delete(stale);
 
             // ONE catalog file, produced HERE — the single catalog-file producer for the whole pipeline. PFound binary
             // form, LZMA-compressed, named with its content hash last: catalog_<gameId>_v<ver>_b<build>_<dev|prod>_<hash>.lzma.
@@ -149,6 +147,18 @@ namespace PFound.ContentDelivery.Editor
             // Embedded package (StreamingAssets): the catalog + a bare-name pointer the embedded reader consumes.
             File.WriteAllBytes(Path.Combine(embeddedDir, catalogFileName), stored);
             File.WriteAllText(Path.Combine(embeddedDir, AssetBundleLayout.EmbeddedCatalogPointerFileName), catalogFileName);
+            keep.Add(catalogFileName);
+            keep.Add(AssetBundleLayout.EmbeddedCatalogPointerFileName);
+
+            // Sweep everything not in the current package: stale bundles from prior builds, old catalogs, foreign
+            // pointer/data files. Keeps the shipped size exactly the current content (+ each kept file's .meta).
+            foreach (var f in Directory.GetFiles(embeddedDir))
+            {
+                string n = Path.GetFileName(f);
+                if (n.EndsWith(".meta", System.StringComparison.Ordinal) || keep.Contains(n)) continue;
+                File.Delete(f);
+                if (File.Exists(f + ".meta")) File.Delete(f + ".meta");
+            }
 
             // Publish/CDN dir (online only): the SAME single .lzma catalog beside the remote bundles, plus a remote
             // pointer naming it — so the runtime resolver discovers the catalog by name (RemoteCatalogPointerReader),
