@@ -23,14 +23,14 @@ namespace PFound.ContentDelivery.Editor
     /// <summary>Result of a content build: where the publish-ready files live and the catalog that maps them.</summary>
     public struct ContentBuildReport
     {
-        public string PublishDirectory;   // folder of content-addressed REMOTE bundle files + catalog.json, ready to upload
-        public string CatalogPath;        // catalog.json inside PublishDirectory
-        public string CatalogJson;        // the catalog document (also written to CatalogPath + StreamingAssets)
+        public string PublishDirectory;   // folder of content-addressed REMOTE bundle files, ready to upload
+        public string CatalogJson;        // the catalog document IN-MEMORY (no catalog file is written here — the
+                                          // config-aware CatalogEditorBuildRunner is the single catalog-file producer)
         public int BundleCount;
         public int LocalBundleCount;      // bundles routed to StreamingAssets (ship in the build)
         public int RemoteBundleCount;     // bundles routed to publish/ (uploaded to the CDN)
-        public string StreamingAssetsDirectory; // where Local bundles + the bootstrap catalog were written
-        public string CatalogVersion;     // content-derived version stamped into the catalog
+        public string StreamingAssetsDirectory; // where Local bundles were written (the runner stages them onward)
+        public string CatalogVersion;     // content-derived hash stamped into the catalog (its ContentHash)
         public BundleReportEntry[] Bundles; // per-bundle summary (name, hash, stored size, routing)
     }
 
@@ -147,15 +147,15 @@ namespace PFound.ContentDelivery.Editor
                 };
             }
 
-            string catalogPath = Path.Combine(publish, ContentDeliveryPaths.CatalogFileName);
-            File.WriteAllText(catalogPath, catalogJson);
-            File.WriteAllText(Path.Combine(streamingContent, ContentDeliveryPaths.CatalogFileName), catalogJson);
+            // The catalog FILE is deliberately NOT written here. The config-aware CatalogEditorBuildRunner is the SINGLE
+            // producer of the shipped catalog — one binary .lzma with a config-derived name — for both the embedded
+            // package and the publish/CDN dir. This pipeline hands back the catalog DATA (catalogJson) in-memory only,
+            // so there is never a stray catalog.json on disk (embedded OR remote).
             AssetDatabase.Refresh();
 
             return new ContentBuildReport
             {
                 PublishDirectory = publish,
-                CatalogPath = catalogPath,
                 CatalogJson = catalogJson,
                 BundleCount = built.Count,
                 LocalBundleCount = localCount,

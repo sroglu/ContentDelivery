@@ -117,8 +117,8 @@ namespace PFound.ContentDelivery.Editor
 
         // ----- staging -----
 
-        // Writes the runtime-consumed embedded layout: every embedded bundle by its hash, the catalog under the
-        // config's file name, and the pointer file naming that catalog.
+        // Writes the runtime-consumed layout: every embedded bundle by its hash, the single binary .lzma catalog +
+        // its pointer in the embedded package, and (online) the same catalog into the publish/CDN dir.
         private static void StageEmbeddedPackage(ContentBuildReport report, Catalog catalog, CatalogEditorConfig config)
         {
             string embeddedDir = Path.Combine(Application.streamingAssetsPath, AssetBundleLayout.AssetBundlesFolder, config.PlatformFolder());
@@ -132,15 +132,24 @@ namespace PFound.ContentDelivery.Editor
                 if (File.Exists(source)) File.Copy(source, Path.Combine(embeddedDir, entry.Hash), true);
             }
 
-            // ONE binary .lzma catalog: serialize to the PFound binary form, LZMA-compress, and name it with its
-            // content hash last (same shape as bundles). The pointer names the exact file; runtime reads it back via
-            // CatalogCodec (auto-detects LZMA → PFCB binary). No .json text form, no content-metadata field.
+            // ONE catalog file, produced HERE — the single catalog-file producer for the whole pipeline. PFound binary
+            // form, LZMA-compressed, named with its content hash last: catalog_<gameId>_v<ver>_b<build>_<dev|prod>_<hash>.lzma.
+            // The SAME bytes go to the embedded package AND (online) the publish/CDN dir, so no .json catalog exists
+            // anywhere. Runtime reads it via CatalogCodec (auto-detects LZMA → PFCB binary).
             byte[] stored = Lzma.Compress(CatalogBinary.Write(catalog));
-            string catalogHash = new XxHash3ContentHasher().Compute(stored);
-            string catalogFileName = config.CatalogFileName(catalogHash);
-            File.WriteAllBytes(Path.Combine(embeddedDir, catalogFileName), stored);
+            string catalogFileName = config.CatalogFileName(new XxHash3ContentHasher().Compute(stored));
 
+            // Embedded package (StreamingAssets): the catalog + a bare-name pointer the embedded reader consumes.
+            File.WriteAllBytes(Path.Combine(embeddedDir, catalogFileName), stored);
             File.WriteAllText(Path.Combine(embeddedDir, AssetBundleLayout.EmbeddedCatalogPointerFileName), catalogFileName);
+
+            // Publish/CDN dir (online only): the SAME single .lzma catalog beside the remote bundles, ready to upload.
+            // (The remote pointer that makes this discoverable at runtime is deferred to the remote-pointer wiring.)
+            if (!config.OfflineBuild && !string.IsNullOrEmpty(report.PublishDirectory))
+            {
+                Directory.CreateDirectory(report.PublishDirectory);
+                File.WriteAllBytes(Path.Combine(report.PublishDirectory, catalogFileName), stored);
+            }
         }
 
         // Rewrites every bundle as Local — the offline catalog has zero remote entries.

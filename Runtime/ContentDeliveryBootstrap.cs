@@ -67,12 +67,24 @@ namespace PFound.ContentDelivery
             IContentHasher hasher = null)
         {
             transport = transport ?? DefaultTransport;
-            catalogUrl = catalogUrl ??
-                ContentDeliveryPaths.StreamingAssetsContentUrl + "/" + ContentDeliveryPaths.CatalogFileName;
             cacheDirectory = cacheDirectory ?? ContentDeliveryPaths.DefaultCacheDirectory;
 
-            byte[] bytes = await transport.DownloadBytesAsync(catalogUrl).AsUniTask();
-            var catalog = CatalogJson.Parse(Encoding.UTF8.GetString(bytes));
+            // Catalog: an explicit URL is fetched + decoded (any PFound form); otherwise the SINGLE embedded catalog
+            // (AssetBundles/<platform>, pointer-named .lzma) — the same source the fail-soft path uses. There is no
+            // separate PFoundContent/catalog.json anymore (the runner is the one catalog-file producer).
+            Catalog catalog;
+            if (catalogUrl != null)
+            {
+                byte[] bytes = await transport.DownloadBytesAsync(catalogUrl).AsUniTask();
+                catalog = CatalogCodec.Decode(bytes, b => CatalogJson.Parse(Encoding.UTF8.GetString(b)));
+            }
+            else
+            {
+                var embedded = await EmbeddedCatalogReader.TryReadEmbeddedCatalogAsync();
+                if (!embedded.Found)
+                    throw new ContentDeliveryException("No embedded catalog found — run App Build to stage the content package.");
+                catalog = embedded.Catalog;
+            }
 
             var source = new RemoteBundleAssetSource(catalog, transport, cacheDirectory, remoteBaseUrl, localBaseUrl, hasher);
             AssetManager.RegisterSource(source);

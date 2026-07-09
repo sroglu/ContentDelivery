@@ -10,11 +10,9 @@ namespace PFound.ContentDelivery
     /// </summary>
     public static class ContentDeliveryPaths
     {
-        /// <summary>Subfolder of StreamingAssets that holds Local bundles + the bootstrap catalog.</summary>
+        /// <summary>Subfolder of StreamingAssets that holds Local bundle files (the runner stages them onward into the
+        /// runtime-consumed <c>AssetBundles/&lt;platform&gt;/</c> layout, which also holds the single .lzma catalog).</summary>
         public const string ContentFolderName = "PFoundContent";
-
-        /// <summary>Bootstrap catalog file name (same under StreamingAssets and on the CDN).</summary>
-        public const string CatalogFileName = "catalog.json";
 
         /// <summary>StreamingAssets content directory as a filesystem path (editor/build authoring side).</summary>
         public static string StreamingAssetsContentDirectory =>

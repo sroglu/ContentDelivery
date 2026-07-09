@@ -47,7 +47,8 @@ namespace PFound.ContentDelivery.Editor
             var duplicates = BundleDuplicateAnalyzer.Analyze(groups);
             string reportPath = ContentBuildReportExporter.Write(report, duplicates, report.PublishDirectory);
 
-            Debug.Log($"[ContentDelivery] Built {report.BundleCount} bundle(s) [{scope}] → {report.PublishDirectory}\nCatalog: {report.CatalogPath}\nReport: {reportPath}" +
+            Debug.Log($"[ContentDelivery] Built {report.BundleCount} bundle(s) [{scope}] → {report.PublishDirectory}\nReport: {reportPath}\n" +
+                      "(Raw bundle build — no catalog file is staged here; run App Build to produce the shipped .lzma catalog.)" +
                       (duplicates.Count > 0 ? $"\n⚠ {duplicates.Count} duplicate dependenc(ies) — see the report or run Analyze Duplicate Dependencies." : ""));
         }
 

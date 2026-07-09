@@ -7,12 +7,13 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using PFound.ContentDelivery.Core;
 
 namespace PFound.ContentDelivery.Editor
 {
     /// <summary>
     /// Publishes built content to an origin. Content-addressed bundles are immutable, so re-uploading the
-    /// same hash is a no-op-by-overwrite; flipping live content is just uploading a new <c>catalog.json</c>.
+    /// same hash is a no-op-by-overwrite; flipping live content is just uploading a new <c>catalog_…_&lt;hash&gt;.lzma</c>.
     /// Editor/standalone tool — never ships in the player. S3 / BunnyCDN plug in as further implementations.
     /// </summary>
     public interface ICdnUploader
@@ -24,8 +25,9 @@ namespace PFound.ContentDelivery.Editor
     public static class CdnUpload
     {
         /// <summary>
-        /// Uploads every file in a publish directory (the content-addressed bundles plus <c>catalog.json</c>),
-        /// keyed by file name. Upload bundles before the catalog so the catalog never points at absent content.
+        /// Uploads every file in a publish directory (the content-addressed bundles plus the single
+        /// <c>catalog_…_&lt;hash&gt;.lzma</c>), keyed by file name. Bundles upload BEFORE the catalog so the catalog never
+        /// advertises absent content. The catalog is identified by its <c>catalog</c> prefix, not a fixed name.
         /// </summary>
         public static async Task UploadPublishDirectoryAsync(
             ICdnUploader uploader, string publishDirectory, CancellationToken cancellationToken = default)
@@ -33,16 +35,22 @@ namespace PFound.ContentDelivery.Editor
             if (uploader == null) throw new ArgumentNullException(nameof(uploader));
             if (!Directory.Exists(publishDirectory)) throw new DirectoryNotFoundException(publishDirectory);
 
-            const string catalogName = "catalog.json";
-            foreach (var path in Directory.GetFiles(publishDirectory))
-            {
-                if (string.Equals(Path.GetFileName(path), catalogName, StringComparison.Ordinal)) continue;
-                await uploader.UploadFileAsync(path, Path.GetFileName(path), cancellationToken);
-            }
+            var files = Directory.GetFiles(publishDirectory);
 
-            string catalog = Path.Combine(publishDirectory, catalogName);
-            if (File.Exists(catalog))
-                await uploader.UploadFileAsync(catalog, catalogName, cancellationToken);
+            // Bundles first. IsShippableBundle excludes the catalog artifact + pointer/meta sidecars, so this is exactly
+            // the content-addressed bundle set.
+            foreach (var path in files)
+                if (AssetBundleLayout.IsShippableBundle(Path.GetFileName(path)))
+                    await uploader.UploadFileAsync(path, Path.GetFileName(path), cancellationToken);
+
+            // Then the single catalog (catalog_*.lzma) — after its bundles are live.
+            foreach (var path in files)
+            {
+                string name = Path.GetFileName(path);
+                if (name.StartsWith("catalog", StringComparison.OrdinalIgnoreCase) &&
+                    !name.EndsWith(".meta", StringComparison.OrdinalIgnoreCase))
+                    await uploader.UploadFileAsync(path, name, cancellationToken);
+            }
         }
     }
 
