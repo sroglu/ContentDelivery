@@ -39,7 +39,7 @@ namespace PFound.ContentDelivery.Editor
         [FoldoutGroup("Build", expanded: true), Required]
         public CatalogEditorConfig Config;
 
-        [FoldoutGroup("Build")]
+        [FoldoutGroup("Build"), CustomValueDrawer(nameof(DrawSelection))]
         public BuildSelectionMode Selection = BuildSelectionMode.AllSets;
 
         [FoldoutGroup("Build"), ShowIf("@Selection == BuildSelectionMode.SingleSet"), CustomValueDrawer(nameof(DrawSetId))]
@@ -148,7 +148,10 @@ namespace PFound.ContentDelivery.Editor
             return res.Found ? res.Catalog : null;
         }
 
-        // Plain-popup drawer for the set id (avoid Odin's broken selector window on this Unity version).
+        // Plain-popup drawers (avoid Odin's broken selector window on this Unity version — see the module convention).
+        BuildSelectionMode DrawSelection(BuildSelectionMode value, GUIContent label) =>
+            (BuildSelectionMode)UnityEditor.EditorGUILayout.EnumPopup(label, value);
+
         string DrawSetId(string value, GUIContent label)
         {
             var ids = Sets.Select(s => s.Id).Where(s => !string.IsNullOrEmpty(s)).ToArray();

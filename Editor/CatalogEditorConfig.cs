@@ -58,10 +58,11 @@ namespace PFound.ContentDelivery.Editor
             { "{streamingAssetsPath}",  Application.streamingAssetsPath },
         };
 
-        // Plain enum popup for the big BuildTarget enum (Odin's enum selector opens the broken window).
+        // Curated content targets (not the full BuildTarget enum). Plain popup — Odin's enum selector is broken here.
         [FoldoutGroup("Build", expanded: true), CustomValueDrawer(nameof(DrawBuildPlatform))]
-        public BuildTarget BuildPlatform = BuildTarget.Android;
-        [FoldoutGroup("Build"), Tooltip("Production drops dev-only groups (AssetGroup.ExcludeInProduction) from a build.")]
+        public ContentBuildTarget BuildPlatform = ContentBuildTarget.Android;
+        [FoldoutGroup("Build"), CustomValueDrawer(nameof(DrawMode))]
+        [Tooltip("Production drops dev-only groups (AssetGroup.ExcludeInProduction) from a build.")]
         public BuildMode Mode = BuildMode.Development;
         [FoldoutGroup("Build"), Tooltip("Game identifier folded into the catalog file name / upload path.")]
         public string GameId = "game";
@@ -70,8 +71,27 @@ namespace PFound.ContentDelivery.Editor
         string AppVersionDisplay => AppVersion();
         [FoldoutGroup("Catalog Version"), ShowInInspector, ReadOnly, LabelText("Last Built #")]
         int LastBuiltDisplay => CatalogBuildNumber;
+        [FoldoutGroup("Catalog Version"), LabelText("Build # override")]
+        [Tooltip("Empty = auto-increment (last built + 1). Enter a number to force the NEXT build number; it is " +
+                 "clamped to ≥ the last built # so it never regresses (min = last build).")]
+        public string BuildNumberOverride = "";
         [FoldoutGroup("Catalog Version"), ShowInInspector, ReadOnly, DisplayAsString, LabelText("Next Catalog (preview)")]
-        string NextCatalogPreview => CatalogNameVersion.Compose(GameId, AppVersion(), CatalogBuildNumber + 1);
+        string NextCatalogPreview => CatalogNameVersion.Compose(GameId, AppVersion(), ResolveNextBuildNumber(), ModeToken());
+        // Current Catalog = the catalog the runtime actually resolves — read from the LIVE embedded pointer (the real
+        // file on disk), NOT reconstructed from this config. Reflects the version+build+mode actually in use (§1.4e).
+        [FoldoutGroup("Catalog Version"), ShowInInspector, ReadOnly, DisplayAsString, LabelText("Current Catalog (live pointer)")]
+        [Tooltip("What the runtime resolves now, from the embedded catalog pointer. 'none / not built' until an App Build stages one.")]
+        string CurrentCatalogDisplay
+        {
+            get
+            {
+                string dir = ContentPlatform.GetEmbeddedAssetBundlePath(PlatformFolder());
+                string pointer = System.IO.Path.Combine(dir, AssetBundleLayout.EmbeddedCatalogPointerFileName);
+                if (!System.IO.File.Exists(pointer)) return "none / not built";
+                string file = System.IO.File.ReadAllText(pointer).Trim();
+                return string.IsNullOrEmpty(file) ? "none / not built" : file;
+            }
+        }
 
         // Per-platform embedded build table (Platform → ✓/✗ + size + catalog + build mode). dir stat + pointer
         // read + a light head-decode of the catalog for its stamped buildMode (§1.4c). LOCAL build state — NOT the CDN.
@@ -130,6 +150,27 @@ namespace PFound.ContentDelivery.Editor
         [LabelText("Env deployment — last check (CDN)")]
         [DictionaryDrawerSettings(KeyLabel = "Env / Platform", ValueLabel = "CDN catalog", IsReadOnly = true)]
         Dictionary<string, string> _remoteStatus = new Dictionary<string, string>();
+
+        [FoldoutGroup("Build Readiness (LOCAL only — not the CDN)"), EnableIf(nameof(HasBuildToReveal))]
+        [Button("Reveal Build Folder")]
+        void RevealBuildFolder()
+        {
+            // Prefer reveal-SELECTING the live embedded catalog for the active platform (highlights the real file the
+            // runtime resolves); fall back to the raw build-output dir. RevealInFinder is cross-platform (Finder/Explorer).
+            string dir = ContentPlatform.GetEmbeddedAssetBundlePath(PlatformFolder());
+            string pointer = System.IO.Path.Combine(dir, AssetBundleLayout.EmbeddedCatalogPointerFileName);
+            if (System.IO.File.Exists(pointer))
+            {
+                string catalog = System.IO.Path.Combine(dir, System.IO.File.ReadAllText(pointer).Trim());
+                EditorUtility.RevealInFinder(System.IO.File.Exists(catalog) ? catalog : dir);
+                return;
+            }
+            EditorUtility.RevealInFinder(CatalogEditorBuildRunner.OutputDirectory);
+        }
+
+        // Enable the reveal button only when there is something to open: an embedded package or the raw build output.
+        bool HasBuildToReveal =>
+            ContentPlatform.HasEmbeddedBundles(PlatformFolder()) || System.IO.Directory.Exists(CatalogEditorBuildRunner.OutputDirectory);
 
         [FoldoutGroup("Build Readiness (LOCAL only — not the CDN)"), GUIColor(0.9f, 0.5f, 0.4f)]
         [Button("Clear Build (embedded, this platform)")]
@@ -213,8 +254,11 @@ namespace PFound.ContentDelivery.Editor
             return p > 0 ? names[p - 1] : value;
         }
 
-        BuildTarget DrawBuildPlatform(BuildTarget value, GUIContent label) =>
-            (BuildTarget)EditorGUILayout.EnumPopup(label, value);
+        ContentBuildTarget DrawBuildPlatform(ContentBuildTarget value, GUIContent label) =>
+            (ContentBuildTarget)EditorGUILayout.EnumPopup(label, value);
+
+        BuildMode DrawMode(BuildMode value, GUIContent label) =>
+            (BuildMode)EditorGUILayout.EnumPopup(label, value);
 
         /// <summary>The number of the LAST App Build (0 = never built). The next build uses <c>+1</c>.</summary>
         public int CatalogBuildNumber => _catalogBuildNumber;
@@ -222,10 +266,23 @@ namespace PFound.ContentDelivery.Editor
         /// <summary>The player app version stamped into the catalog name (scopes a catalog to a release).</summary>
         public string AppVersion() => PlayerSettings.bundleVersion;
 
-        /// <summary>Bumps the build counter and persists it. Call once per App Build, before naming the catalog.</summary>
-        public void BumpBuildNumber()
+        /// <summary>
+        /// The build number the NEXT App Build will use: the explicit <see cref="BuildNumberOverride"/> when set
+        /// (clamped to ≥ the last built number so it never regresses), else auto-increment (last + 1) when empty or
+        /// unparseable. Pure — does not mutate state (call <see cref="CommitBuildNumber"/> to persist).
+        /// </summary>
+        public int ResolveNextBuildNumber()
         {
-            _catalogBuildNumber++;
+            if (!string.IsNullOrWhiteSpace(BuildNumberOverride) && int.TryParse(BuildNumberOverride.Trim(), out int n))
+                return Mathf.Max(n, _catalogBuildNumber);   // min = last built; a below-last entry is raised, never regresses
+            return _catalogBuildNumber + 1;                 // empty / unparseable → auto-increment
+        }
+
+        /// <summary>Persists <paramref name="number"/> as the last built number. Call once per App Build, before
+        /// naming the catalog (<see cref="CatalogFileName"/> reads it).</summary>
+        public void CommitBuildNumber(int number)
+        {
+            _catalogBuildNumber = number;
             EditorUtility.SetDirty(this);
             AssetDatabase.SaveAssets();
         }
@@ -241,13 +298,17 @@ namespace PFound.ContentDelivery.Editor
         }
 
         /// <summary>
-        /// The catalog file name this config publishes: <c>catalog_&lt;gameId&gt;_v&lt;appVersion&gt;_b&lt;build&gt;.json</c>.
-        /// Uses the CURRENT <see cref="CatalogBuildNumber"/> — call <see cref="BumpBuildNumber"/> first. See <see cref="CatalogNameVersion"/>.
+        /// The catalog file name this config publishes: <c>catalog_&lt;gameId&gt;_v&lt;appVersion&gt;_b&lt;build&gt;_&lt;dev|prod&gt;.json</c>.
+        /// Uses the CURRENT <see cref="CatalogBuildNumber"/> — call <see cref="CommitBuildNumber"/> first. See <see cref="CatalogNameVersion"/>.
         /// </summary>
-        public string CatalogFileName() => CatalogNameVersion.Compose(GameId, AppVersion(), CatalogBuildNumber);
+        public string CatalogFileName() => CatalogNameVersion.Compose(GameId, AppVersion(), CatalogBuildNumber, ModeToken());
+
+        /// <summary>The dev/prod token appended to the catalog file name for a human glance (§1.4e); the machine-readable
+        /// source of truth stays the catalog-content <c>buildMode</c> stamp (§1.4c).</summary>
+        string ModeToken() => Mode == BuildMode.Production ? "prod" : "dev";
 
         /// <summary>The platform folder name for <see cref="BuildPlatform"/> (matches the runtime layout).</summary>
-        public string PlatformFolder() => ContentPlatform.EditorPlatformFolder(BuildPlatform);
+        public string PlatformFolder() => ContentPlatform.EditorPlatformFolder(BuildPlatform.ToBuildTarget());
 
         /// <summary>The runtime remote config this build targets (empty base URL = offline).</summary>
         public RemoteContentConfig ToRemoteConfig() =>
@@ -258,6 +319,15 @@ namespace PFound.ContentDelivery.Editor
         {
             if (string.IsNullOrWhiteSpace(GameId))
                 yield return AuthoringIssue.Warning("Game Id is empty — set a game id (it names the catalog).");
+
+            // Build-number override (applies to offline + online): flag a non-number or a below-last entry.
+            if (!string.IsNullOrWhiteSpace(BuildNumberOverride))
+            {
+                if (!int.TryParse(BuildNumberOverride.Trim(), out int n))
+                    yield return AuthoringIssue.Warning($"Build # override '{BuildNumberOverride}' is not a number — the next build will auto-increment (last + 1).");
+                else if (n < _catalogBuildNumber)
+                    yield return AuthoringIssue.Warning($"Build # override {n} is below the last built #{_catalogBuildNumber} — it will be raised to {_catalogBuildNumber} (min = last build).");
+            }
 
             if (OfflineBuild) yield break; // env/upload ignored offline
 

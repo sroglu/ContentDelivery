@@ -51,10 +51,10 @@ namespace PFound.ContentDelivery.Editor
         [Tooltip("Logical bundle id (also the catalog bundle Name). Defaults to the asset file name when empty.")]
         public string BundleName;
 
-        [FoldoutGroup("Bundle")] public DistributionMode Distribution = DistributionMode.Remote;
-        [FoldoutGroup("Bundle")] public BundlePackingMode Packing = BundlePackingMode.PackTogether;
+        [FoldoutGroup("Bundle"), CustomValueDrawer(nameof(DrawDistribution))] public DistributionMode Distribution = DistributionMode.Remote;
+        [FoldoutGroup("Bundle"), CustomValueDrawer(nameof(DrawPacking))] public BundlePackingMode Packing = BundlePackingMode.PackTogether;
 
-        [FoldoutGroup("Bundle"), DisableIf(nameof(IsLocal))]
+        [FoldoutGroup("Bundle"), DisableIf(nameof(IsLocal)), CustomValueDrawer(nameof(DrawPhase))]
         [Tooltip("Phased-preload band for remote content. Local groups load synchronously — ignored there.")]
         public AssetPhase Phase = AssetPhase.Standard;
 
@@ -73,6 +73,12 @@ namespace PFound.ContentDelivery.Editor
         public List<AssetEntry> Entries = new List<AssetEntry>();
 
         bool IsLocal => Distribution == DistributionMode.Local;
+
+        // Plain enum popups — Odin's enum selector opens a window that MissingMethodExceptions on this Unity
+        // version. Every enum dropdown in a ContentDelivery SO goes through CustomValueDrawer + EditorGUILayout.
+        DistributionMode DrawDistribution(DistributionMode v, GUIContent l) => (DistributionMode)UnityEditor.EditorGUILayout.EnumPopup(l, v);
+        BundlePackingMode DrawPacking(BundlePackingMode v, GUIContent l) => (BundlePackingMode)UnityEditor.EditorGUILayout.EnumPopup(l, v);
+        AssetPhase DrawPhase(AssetPhase v, GUIContent l) => (AssetPhase)UnityEditor.EditorGUILayout.EnumPopup(l, v);
 
         /// <summary>The effective bundle id: <see cref="BundleName"/> or the asset's name when unset.</summary>
         public string ResolveBundleName() => string.IsNullOrEmpty(BundleName) ? name : BundleName;

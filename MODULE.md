@@ -74,7 +74,8 @@ All shipped assemblies are `autoReferenced: false` — a consumer references the
 
 **`PFound.ContentDelivery.Editor`**
 - `AssetGroup` (`AssetEntry`, `DistributionMode`, `BundlePackingMode`) — authored content unit.
-- `CatalogEditorConfig` (`ContentEnvironmentEntry`) — master build config.
+- `ContentBuildManifest` (`ContentSet`, `BuildSelectionMode`) — curated set-based build entry point; `ResolveGroups`.
+- `CatalogEditorConfig` (`ContentEnvironmentEntry`, `BuildMode`) — the build "how": platform, mode, env, catalog versioning.
 - `BundleBuildPipeline` (`ContentBuildReport`, `BundleReportEntry`) — the SBP build.
 - `CatalogBuilder` — catalog JSON emission; `ContentDeliveryMenu` / `CatalogEditorBuildRunner` — menu entry points.
 - `BuildScope` / `BuildScopeFilter`, `BundleDuplicateAnalyzer`, `ContentBuildReportExporter`.
@@ -226,18 +227,39 @@ anywhere under `Assets` — the pipeline finds them via `AssetDatabase`):
   `Distribution` (`Local`/`Remote`), `Packing` (`PackTogether`/`PackSeparately`), `Phase`, an optional
   content-`Pack` id, `ExcludeInProduction`, and the `Entries` (each an asset + stable `Address` +
   free-form `Labels`).
-- **`CatalogEditorConfig`** — the master build config, centered on the `OfflineBuild` switch (force
-  every group into StreamingAssets and strip remote entries). Carries `BuildPlatform`, `Scope`,
-  `GroupsToBuild`, `GameId` (folded into the catalog file name via `CatalogFileName()`), the shared
-  `Environments` + `ActiveEnvironment`, and the `UploadAfterBuild` gate. `ToRemoteConfig()` produces
-  the runtime `RemoteContentConfig` so the build and the runtime never drift.
+- **`CatalogEditorConfig`** — the "how" of a build, centered on the `OfflineBuild` switch (force every
+  group into StreamingAssets and strip remote entries). Carries `BuildPlatform`, `Mode`
+  (`Development`/`Production` — Production drops `ExcludeInProduction` groups), `GameId`, the shared
+  `Environments` + `ActiveEnvironment`, the `UploadAfterBuild` gate, and catalog versioning:
+  `BuildNumberOverride` (empty = auto-increment last+1; a number forces the next build #, clamped to
+  ≥ last). `CatalogFileName()` = `catalog_<gameId>_v<appVersion>_b<build>.json`; `ToRemoteConfig()`
+  produces the runtime `RemoteContentConfig` so build and runtime never drift. (Set-selection — the old
+  `Scope`/`GroupsToBuild` — moved OUT to `ContentBuildManifest`.)
+- **`ContentBuildManifest`** — the "what" of a build: the curated, set-based build **entry point**.
+  `Sets` (each a `ContentSet{ string Id, List<AssetGroup> Groups }`) + `AlwaysIncluded` core groups.
+  `ResolveGroups(mode, setId)` = union of all sets (`AllSets`) or one named set (`SingleSet`), each
+  ∪ `AlwaysIncluded`. The `Build` button resolves the scope and hands it to `CatalogEditorBuildRunner`;
+  the shared runner applies the Production `ExcludeInProd` filter (§`config.Mode`) and stamps the
+  dev/prod posture into the catalog content as `buildMode`. Generic — a plain `string Id` set key, no
+  game vocabulary (a game project maps its own ids onto `ContentSet.Id` in its own layer).
+
+**Authoring-inspector convention (Odin selector is broken on this Unity):** the Odin enum/dropdown
+selector window throws `MissingMethodException` when clicked on this Unity version. So EVERY dropdown in
+a ContentDelivery authoring SO (`Mode`, `Selection`, `Distribution`, `Packing`, `Phase`, `BuildPlatform`,
+`ActiveEnvironment`, `SelectedSetId`) uses `[CustomValueDrawer(nameof(DrawX))]` + a one-liner over Unity's
+native IMGUI popup (`EditorGUILayout.EnumPopup` / `EditorGUILayout.Popup`) — never a plain Odin enum field
+or `[ValueDropdown]`. Add new dropdowns the same way.
 
 ### 2. Build (editor)
 
 Run a menu item under `PFound/Content Delivery/`:
-- `Build Content (All Groups | Selected Groups | Production — exclude dev-only)` — group-scoped builds.
-- `App Build (from Catalog Editor Config)` — config-driven (`CatalogEditorBuildRunner`), honoring the
-  offline switch + upload gate; `App Clear Embedded Package` clears the staged StreamingAssets content.
+- **`ContentBuildManifest` → Build button** — the authored path: pick `AllSets` or a `SingleSet`, hit
+  Build. This is the normal way to build a set-scoped (or hub-wide) catalog.
+- `Build Content (All Groups)` — raw "build every project group" debug shortcut (`ContentDeliveryMenu`).
+- `App Build (from Catalog Editor Config)` — config-driven (`CatalogEditorBuildRunner`, all project
+  groups), honoring the offline switch + upload gate; `App Clear Embedded Package` clears the staged
+  StreamingAssets content. (The old `Selected Groups` / `Production` menus were removed — set-selection
+  is the manifest's job, and Production is now `CatalogEditorConfig.Mode`.)
 - `Analyze Duplicate Dependencies` — reports assets implicitly embedded in more than one bundle.
 
 The build runs on the **Scriptable Build Pipeline** (`BundleBuildPipeline` → `ContentPipeline`):

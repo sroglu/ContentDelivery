@@ -20,6 +20,9 @@ namespace PFound.ContentDelivery.Editor
     {
         private const string OutputFolderName = "ContentBuild";
 
+        /// <summary>The raw build output directory (<c>&lt;projectRoot&gt;/ContentBuild</c>) — bundles + catalog before staging.</summary>
+        public static string OutputDirectory => Path.Combine(Directory.GetParent(Application.dataPath).FullName, OutputFolderName);
+
         [MenuItem("PFound/Content Delivery/App Build (from Catalog Editor Config)")]
         public static void BuildFromConfigMenu()
         {
@@ -68,15 +71,15 @@ namespace PFound.ContentDelivery.Editor
             // online builds keep the LZMA transfer form the runtime decompresses into its cache.
             var compression = config.OfflineBuild ? BundleCompression.None : BundleCompression.Lzma;
 
-            string outputDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, OutputFolderName);
-            var report = BundleBuildPipeline.Build(groups, outputDir, config.BuildPlatform, hasher: null, compression: compression);
+            string outputDir = OutputDirectory;
+            var report = BundleBuildPipeline.Build(groups, outputDir, config.BuildPlatform.ToBuildTarget(), hasher: null, compression: compression);
 
             // Stamp dev/prod into the catalog CONTENT so the artifact self-identifies (the file name stays
             // stable — runtime resolution unchanged). Offline additionally forces every bundle Local. Single choke.
             string buildMode = config.Mode == BuildMode.Production ? "production" : "development";
             Catalog catalog = StampCatalog(CatalogJson.Parse(report.CatalogJson), buildMode, config.OfflineBuild);
 
-            config.BumpBuildNumber();
+            config.CommitBuildNumber(config.ResolveNextBuildNumber());   // override (min=last) or auto-increment
             StageEmbeddedPackage(report, catalog, config);
 
             AssetDatabase.Refresh();

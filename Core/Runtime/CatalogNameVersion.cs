@@ -3,7 +3,7 @@ using System;
 namespace PFound.ContentDelivery.Core
 {
     /// <summary>
-    /// The version stamped into a catalog file name: <c>catalog_&lt;gameId&gt;_v&lt;appVersion&gt;_b&lt;build&gt;.json</c>.
+    /// The version stamped into a catalog file name: <c>catalog_&lt;gameId&gt;_v&lt;appVersion&gt;_b&lt;build&gt;[_&lt;mode&gt;].json</c>.
     /// The <see cref="AppVersion"/> (the player's <c>Application.version</c>) scopes a catalog to an app release; the
     /// monotonic <see cref="Build"/> counter orders catalogs within/across releases. Ordering is
     /// (appVersion, build) so a resolver can reject an OLDER catalog (rollback / stale pointer) — a downgrade guard.
@@ -13,20 +13,29 @@ namespace PFound.ContentDelivery.Core
     {
         public readonly string AppVersion;   // e.g. "1.0.0"
         public readonly int Build;           // monotonic build counter
+        public readonly string Mode;         // dev/prod posture token, or null on names without it
         public readonly bool Parsed;         // false when the name carried no version postfix
 
-        public CatalogNameVersion(string appVersion, int build)
+        public CatalogNameVersion(string appVersion, int build, string mode = null)
         {
             AppVersion = appVersion ?? string.Empty;
             Build = build;
+            Mode = string.IsNullOrEmpty(mode) ? null : mode;
             Parsed = true;
         }
 
         public static readonly CatalogNameVersion None = default; // Parsed == false
 
-        /// <summary>Builds the versioned catalog file name. <paramref name="appVersion"/> underscores → '-' (delimiter-safe).</summary>
-        public static string Compose(string gameId, string appVersion, int build) =>
-            $"catalog_{gameId}_v{Sanitize(appVersion)}_b{build}.json";
+        /// <summary>
+        /// Builds the versioned catalog file name: <c>catalog_&lt;gameId&gt;_v&lt;appVersion&gt;_b&lt;build&gt;[_&lt;mode&gt;].json</c>.
+        /// <paramref name="appVersion"/> underscores → '-' (delimiter-safe). <paramref name="mode"/> (e.g. "dev"/"prod")
+        /// is appended after the build so dev &amp; prod builds have distinct names; omit (null) for an unmoded name.
+        /// </summary>
+        public static string Compose(string gameId, string appVersion, int build, string mode = null)
+        {
+            string modeToken = string.IsNullOrEmpty(mode) ? string.Empty : $"_{mode}";
+            return $"catalog_{gameId}_v{Sanitize(appVersion)}_b{build}{modeToken}.json";
+        }
 
         private static string Sanitize(string appVersion) =>
             string.IsNullOrEmpty(appVersion) ? "0" : appVersion.Replace('_', '-').Replace(' ', '-');
@@ -47,7 +56,11 @@ namespace PFound.ContentDelivery.Core
 
             int bAt = name.LastIndexOf("_b", StringComparison.Ordinal);
             if (bAt < 0) return None;
-            string buildText = name.Substring(bAt + 2);
+            // After "_b": the build digits, then an OPTIONAL "_<mode>" token (e.g. "12" or "12_prod").
+            string tail = name.Substring(bAt + 2);
+            int modeAt = tail.IndexOf('_');
+            string buildText = modeAt >= 0 ? tail.Substring(0, modeAt) : tail;
+            string mode = modeAt >= 0 ? tail.Substring(modeAt + 1) : null;
             if (buildText.Length == 0 || !int.TryParse(buildText, out int build)) return None;
 
             string head = name.Substring(0, bAt);              // catalog_<gameId>_v<appVersion>
@@ -56,7 +69,7 @@ namespace PFound.ContentDelivery.Core
             string appVersion = head.Substring(vAt + 2);
             if (appVersion.Length == 0) return None;
 
-            return new CatalogNameVersion(appVersion, build);
+            return new CatalogNameVersion(appVersion, build, mode);
         }
 
         /// <summary>(appVersion, build) order. App version compared numeric-component-wise (1.10 &gt; 1.9), then build.</summary>
@@ -90,6 +103,7 @@ namespace PFound.ContentDelivery.Core
             return 0;
         }
 
-        public override string ToString() => Parsed ? $"v{AppVersion} b{Build}" : "<unversioned>";
+        public override string ToString() =>
+            Parsed ? $"v{AppVersion} b{Build}{(Mode != null ? " " + Mode : string.Empty)}" : "<unversioned>";
     }
 }
