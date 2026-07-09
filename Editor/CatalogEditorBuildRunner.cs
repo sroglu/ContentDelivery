@@ -71,14 +71,16 @@ namespace PFound.ContentDelivery.Editor
             string outputDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, OutputFolderName);
             var report = BundleBuildPipeline.Build(groups, outputDir, config.BuildPlatform, hasher: null, compression: compression);
 
-            Catalog catalog = CatalogJson.Parse(report.CatalogJson);
-            if (config.OfflineBuild) catalog = ForceAllLocal(catalog);
+            // Stamp dev/prod into the catalog CONTENT so the artifact self-identifies (the file name stays
+            // stable — runtime resolution unchanged). Offline additionally forces every bundle Local. Single choke.
+            string buildMode = config.Mode == BuildMode.Production ? "production" : "development";
+            Catalog catalog = StampCatalog(CatalogJson.Parse(report.CatalogJson), buildMode, config.OfflineBuild);
 
             config.BumpBuildNumber();
             StageEmbeddedPackage(report, catalog, config);
 
             AssetDatabase.Refresh();
-            Debug.Log($"[ContentDelivery] Built {report.BundleCount} bundle(s) [{groups.Count} group(s), {(config.OfflineBuild ? "OFFLINE" : "online")}] → embedded {config.PlatformFolder()}.");
+            Debug.Log($"[ContentDelivery] Built {report.BundleCount} bundle(s) [{groups.Count} group(s), {buildMode}, {(config.OfflineBuild ? "OFFLINE" : "online")}] → embedded {config.PlatformFolder()}.");
             return report;
         }
 
@@ -120,22 +122,26 @@ namespace PFound.ContentDelivery.Editor
             string catalogFileName = config.CatalogFileName();
             File.WriteAllText(Path.Combine(embeddedDir, catalogFileName), CatalogJson.ToJson(
                 new List<CatalogBundle>(catalog.AllBundles), new List<CatalogAsset>(catalog.AllAssets),
-                new List<CatalogPack>(catalog.AllPacks), catalog.Version));
+                new List<CatalogPack>(catalog.AllPacks), catalog.Version, buildMode: catalog.BuildMode));
 
             File.WriteAllText(Path.Combine(embeddedDir, AssetBundleLayout.EmbeddedCatalogPointerFileName), catalogFileName);
         }
 
-        // Rewrites every bundle as Local — the offline catalog has zero remote entries.
-        private static Catalog ForceAllLocal(Catalog catalog)
+        // Returns a copy of the catalog with buildMode stamped into its content. forceLocal (offline) rewrites
+        // every bundle as Local so the offline catalog has zero remote entries; otherwise bundles pass through.
+        private static Catalog StampCatalog(Catalog catalog, string buildMode, bool forceLocal)
         {
             var bundles = new List<CatalogBundle>();
             foreach (var b in catalog.AllBundles)
-                bundles.Add(new CatalogBundle
-                {
-                    Name = b.Name, Hash = b.Hash, UncompressedHash = b.UncompressedHash,
-                    Dependencies = b.Dependencies, Local = true, Compression = b.Compression,
-                });
-            return new Catalog(bundles, new List<CatalogAsset>(catalog.AllAssets), catalog.Version, new List<CatalogPack>(catalog.AllPacks));
+                bundles.Add(forceLocal
+                    ? new CatalogBundle
+                    {
+                        Name = b.Name, Hash = b.Hash, UncompressedHash = b.UncompressedHash,
+                        Dependencies = b.Dependencies, Local = true, Compression = b.Compression,
+                    }
+                    : b);
+            return new Catalog(bundles, new List<CatalogAsset>(catalog.AllAssets), catalog.Version,
+                new List<CatalogPack>(catalog.AllPacks), buildMode);
         }
 
         // ----- group gathering -----

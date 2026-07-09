@@ -61,13 +61,22 @@ namespace PFound.ContentDelivery.Core
         /// </summary>
         public string Version { get; }
 
+        /// <summary>
+        /// Which dev/prod posture built this catalog — <c>"development"</c> / <c>"production"</c>, or null on
+        /// catalogs built before this field existed (back-compatible). The build output is otherwise
+        /// mode-agnostic (hash-named bundles, GameId-only-ish catalog name), so this lets tooling self-identify a
+        /// dev vs prod artifact. Informational — the runtime resolves content by address regardless.
+        /// </summary>
+        public string BuildMode { get; }
+
         public Catalog(
             IEnumerable<CatalogBundle> bundles, IEnumerable<CatalogAsset> assets,
-            string version = null, IEnumerable<CatalogPack> packs = null)
+            string version = null, IEnumerable<CatalogPack> packs = null, string buildMode = null)
         {
             if (bundles == null) throw new ArgumentNullException(nameof(bundles));
             if (assets == null) throw new ArgumentNullException(nameof(assets));
             Version = version;
+            BuildMode = buildMode;
             _bundles = new Dictionary<string, CatalogBundle>(StringComparer.Ordinal);
             foreach (var b in bundles) _bundles[b.Name] = b;
             _assets = new Dictionary<string, CatalogAsset>(StringComparer.Ordinal);

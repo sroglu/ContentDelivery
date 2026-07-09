@@ -27,7 +27,7 @@ namespace PFound.ContentDelivery
         private struct PackDto { public string name; public string[] bundles; }
 
         [Serializable]
-        private struct CatalogDto { public string version; public BundleDto[] bundles; public AssetDto[] assets; public PackDto[] packs; }
+        private struct CatalogDto { public string version; public string buildMode; public BundleDto[] bundles; public AssetDto[] assets; public PackDto[] packs; }
 
         /// <summary>Builds a <see cref="Catalog"/> from a JSON document.</summary>
         public static Catalog Parse(string json)
@@ -82,7 +82,9 @@ namespace PFound.ContentDelivery
                 };
             }
 
-            return new Catalog(bundles, assets, dto.version, packs);
+            // buildMode is optional — absent on catalogs built before the field existed (⇒ null).
+            string buildMode = string.IsNullOrEmpty(dto.buildMode) ? null : dto.buildMode;
+            return new Catalog(bundles, assets, dto.version, packs, buildMode);
         }
 
         /// <summary>
@@ -92,7 +94,7 @@ namespace PFound.ContentDelivery
         /// </summary>
         public static string ToJson(
             IReadOnlyList<CatalogBundle> bundles, IReadOnlyList<CatalogAsset> assets,
-            IReadOnlyList<CatalogPack> packs = null, string version = null, bool prettyPrint = true)
+            IReadOnlyList<CatalogPack> packs = null, string version = null, string buildMode = null, bool prettyPrint = true)
         {
             if (bundles == null) throw new ArgumentNullException(nameof(bundles));
             if (assets == null) throw new ArgumentNullException(nameof(assets));
@@ -100,6 +102,7 @@ namespace PFound.ContentDelivery
             var dto = new CatalogDto
             {
                 version = version,
+                buildMode = buildMode,
                 bundles = new BundleDto[bundles.Count],
                 assets = new AssetDto[assets.Count],
                 packs = new PackDto[packs?.Count ?? 0],

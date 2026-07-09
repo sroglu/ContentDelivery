@@ -11,6 +11,10 @@ namespace PFound.ContentDelivery.Core
     /// Smaller and faster to parse than the JSON form for large catalogs; the JSON form stays the
     /// human-readable / build-debug format. Pure Core (BCL only), engine-free.
     /// Layout: magic "PFCB" · format version byte · catalog version string · bundle[] · asset[] · pack[].
+    /// NOTE: <see cref="Catalog.BuildMode"/> is intentionally NOT carried here — it is a JSON-format concern
+    /// (the build pipeline only ever emits JSON catalogs). A binary round-trip leaves BuildMode null; adding it
+    /// would need a format-version bump that invalidates existing v3 binary caches, for a field this path never
+    /// writes. Bump to v4 only if the pipeline ever starts emitting binary catalogs.
     /// </summary>
     public static class CatalogBinary
     {

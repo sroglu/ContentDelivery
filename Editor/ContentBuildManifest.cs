@@ -4,6 +4,7 @@ using System.Linq;
 using Sirenix.OdinInspector;
 using UnityEngine;
 using PFound.ContentDelivery;
+using PFound.ContentDelivery.Core;
 
 namespace PFound.ContentDelivery.Editor
 {
@@ -116,25 +117,33 @@ namespace PFound.ContentDelivery.Editor
                 if (!covered.Contains(g))
                     yield return AuthoringIssue.Warning($"AssetGroup '{g.name}' is in no set and not AlwaysIncluded — it will never build.");
 
-            // 3) Drift vs last embedded build (informational): selected addresses vs the last built catalog.
+            // 3) Drift vs last embedded build (informational): selected addresses AND build mode vs the last catalog.
             string platform = Config ? Config.PlatformFolder() : ContentPlatform.ActivePlatformFolder();
-            var built = ReadEmbeddedAddresses(platform);
-            if (built != null)
+            var lastBuilt = ReadEmbeddedCatalog(platform);
+            if (lastBuilt != null)
             {
+                var built = lastBuilt.AllAssets.Select(a => a.Address).Where(a => !string.IsNullOrEmpty(a)).ToHashSet(StringComparer.Ordinal);
                 var selectedAddrs = resolved.SelectMany(g => g.Entries).Select(e => e.Address).Where(a => !string.IsNullOrEmpty(a)).ToHashSet(StringComparer.Ordinal);
                 foreach (var a in selectedAddrs) if (!built.Contains(a)) yield return AuthoringIssue.Error($"Selected but not in the last build: '{a}' — rebuild.");
                 foreach (var a in built) if (!selectedAddrs.Contains(a)) yield return AuthoringIssue.Warning($"Last build has extra content beyond the selected scope: '{a}' (harmless, wider than expected).");
+
+                // Build-mode drift: the last embedded build's stamped mode vs the config's current Mode.
+                if (Config && !string.IsNullOrEmpty(lastBuilt.BuildMode))
+                {
+                    string cur = Config.Mode == BuildMode.Production ? "production" : "development";
+                    if (!string.Equals(lastBuilt.BuildMode, cur, StringComparison.OrdinalIgnoreCase))
+                        yield return AuthoringIssue.Warning($"Last embedded build was '{lastBuilt.BuildMode}' but Config.Mode is now '{cur}' — rebuild to match.");
+                }
             }
         }
 
-        // Reads the addresses present in the last embedded catalog for a platform, or null if none built.
-        // Editor-only, desktop StreamingAssets file read — sync-over-async is acceptable at this boundary.
-        static HashSet<string> ReadEmbeddedAddresses(string platform)
+        // Reads the last embedded catalog for a platform, or null if none built. Editor-only desktop
+        // StreamingAssets file read — sync-over-async is acceptable at this boundary.
+        static Catalog ReadEmbeddedCatalog(string platform)
         {
             if (!ContentPlatform.HasEmbeddedBundles(platform)) return null;
             var res = EmbeddedCatalogReader.TryReadEmbeddedCatalogAsync(platform).GetAwaiter().GetResult();
-            if (!res.Found) return null;
-            return res.Catalog.AllAssets.Select(a => a.Address).ToHashSet(StringComparer.Ordinal);
+            return res.Found ? res.Catalog : null;
         }
 
         // Plain-popup drawer for the set id (avoid Odin's broken selector window on this Unity version).
