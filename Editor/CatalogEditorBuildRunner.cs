@@ -150,12 +150,16 @@ namespace PFound.ContentDelivery.Editor
             File.WriteAllBytes(Path.Combine(embeddedDir, catalogFileName), stored);
             File.WriteAllText(Path.Combine(embeddedDir, AssetBundleLayout.EmbeddedCatalogPointerFileName), catalogFileName);
 
-            // Publish/CDN dir (online only): the SAME single .lzma catalog beside the remote bundles, ready to upload.
-            // (The remote pointer that makes this discoverable at runtime is deferred to the remote-pointer wiring.)
+            // Publish/CDN dir (online only): the SAME single .lzma catalog beside the remote bundles, plus a remote
+            // pointer naming it — so the runtime resolver discovers the catalog by name (RemoteCatalogPointerReader),
+            // never having to predict the hash-stamped file name.
             if (!config.OfflineBuild && !string.IsNullOrEmpty(report.PublishDirectory))
             {
                 Directory.CreateDirectory(report.PublishDirectory);
                 File.WriteAllBytes(Path.Combine(report.PublishDirectory, catalogFileName), stored);
+                File.WriteAllText(
+                    Path.Combine(report.PublishDirectory, AssetBundleLayout.RemoteCatalogPointerFileName),
+                    $"{AssetBundleLayout.CatalogFileNameKey}={catalogFileName}");
             }
         }
 

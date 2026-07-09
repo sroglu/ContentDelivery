@@ -51,6 +51,12 @@ namespace PFound.ContentDelivery.Editor
                     !name.EndsWith(".meta", StringComparison.OrdinalIgnoreCase))
                     await uploader.UploadFileAsync(path, name, cancellationToken);
             }
+
+            // Finally the remote pointer — it advertises the now-live catalog, so it is uploaded LAST and never names
+            // absent content. This is what RemoteCatalogResolver reads to discover the current catalog file name.
+            string pointerPath = Path.Combine(publishDirectory, AssetBundleLayout.RemoteCatalogPointerFileName);
+            if (File.Exists(pointerPath))
+                await uploader.UploadFileAsync(pointerPath, AssetBundleLayout.RemoteCatalogPointerFileName, cancellationToken);
         }
     }
 

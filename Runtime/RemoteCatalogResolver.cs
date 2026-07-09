@@ -45,7 +45,17 @@ namespace PFound.ContentDelivery
             if (options == null) throw new ArgumentNullException(nameof(options));
 
             var opts = Normalize(options);
+
+            // Pointer-driven discovery: ask the remote pointer which catalog is current, so the CDN can serve the
+            // arbitrary (hash-stamped) name the config can't predict. Fail-soft — an offline / missing / unparsable
+            // pointer falls back to the config-carried CatalogFileName (legacy CDN / not-yet-published).
             string required = remoteConfig.CatalogFileName;
+            if (!remoteConfig.IsOffline)
+            {
+                var pointer = await new RemoteCatalogPointerReader(opts.Transport)
+                    .TryReadPointerAsync(remoteConfig.OriginUrl, remoteConfig.PlatformFolder, cancellationToken);
+                if (pointer.Resolved) required = pointer.CatalogFileName;
+            }
 
             var embedded = await EmbeddedCatalogReader.TryReadEmbeddedCatalogAsync(opts.PlatformFolder);
             string cachedPath = Path.Combine(opts.CacheDirectory, required);
@@ -81,7 +91,10 @@ namespace PFound.ContentDelivery
                         catalog = DecodeCatalogBytes(File.ReadAllBytes(cachedPath));
                         break;
                     default:
-                        byte[] bytes = await opts.Transport.DownloadBytesAsync(remoteConfig.GetCatalogUrl(), cancellationToken);
+                        // Fetch the pointer-discovered catalog (NOT remoteConfig.GetCatalogUrl(), whose name is the
+                        // config-predicted one) from the same platform folder.
+                        string catalogUrl = AssetBundleLayout.CombineUrl(remoteConfig.ResolveContentUrl(), required);
+                        byte[] bytes = await opts.Transport.DownloadBytesAsync(catalogUrl, cancellationToken);
                         Directory.CreateDirectory(opts.CacheDirectory);
                         File.WriteAllBytes(cachedPath, bytes);
                         catalog = DecodeCatalogBytes(bytes);
