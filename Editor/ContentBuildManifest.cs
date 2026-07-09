@@ -92,13 +92,15 @@ namespace PFound.ContentDelivery.Editor
         /// </summary>
         public IEnumerable<AuthoringIssue> Validate()
         {
-            // Resolve the current scope (guard unknown id so the inspector doesn't throw). yield can't live in a
-            // catch, so capture the error then yield after the try/catch.
-            List<AssetGroup> resolved = null;
-            string resolveError = null;
-            try { resolved = ResolveGroups(this, Selection, SelectedSetId); }
-            catch (ArgumentException e) { resolveError = e.Message; }
-            if (resolveError != null) { yield return AuthoringIssue.Error(resolveError); yield break; }
+            // Guard the one precondition that would make ResolveGroups throw (unknown SingleSet id) EXPLICITLY —
+            // don't try/catch our own throw. If it holds, ResolveGroups can't throw, so no defensive wrapping.
+            if (Selection == BuildSelectionMode.SingleSet &&
+                !Sets.Any(s => string.Equals(s.Id, SelectedSetId, StringComparison.Ordinal)))
+            {
+                yield return AuthoringIssue.Error($"No ContentSet with Id '{SelectedSetId}'.");
+                yield break;
+            }
+            var resolved = ResolveGroups(this, Selection, SelectedSetId);
 
             // 1) Buildability gate: every resolved entry valid + addresses unique across the set.
             var seenAddr = new HashSet<string>(StringComparer.Ordinal);
