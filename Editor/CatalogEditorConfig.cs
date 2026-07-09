@@ -73,8 +73,8 @@ namespace PFound.ContentDelivery.Editor
         [FoldoutGroup("Catalog Version"), ShowInInspector, ReadOnly, DisplayAsString, LabelText("Next Catalog (preview)")]
         string NextCatalogPreview => CatalogNameVersion.Compose(GameId, AppVersion(), CatalogBuildNumber + 1);
 
-        // Per-platform embedded build table (Platform → ✓/✗ + size). Cheap (dir stat + tiny pointer read) so it
-        // lives in the inspector; no catalog decode. This is your LOCAL build state — NOT whether it's on a CDN.
+        // Per-platform embedded build table (Platform → ✓/✗ + size + catalog + build mode). dir stat + pointer
+        // read + a light head-decode of the catalog for its stamped buildMode (§1.4c). LOCAL build state — NOT the CDN.
         [FoldoutGroup("Build Readiness (LOCAL only — not the CDN)", expanded: true), ShowInInspector, ReadOnly]
         [DictionaryDrawerSettings(KeyLabel = "Platform", ValueLabel = "Embedded build (shipped, offline)", IsReadOnly = true)]
         Dictionary<string, string> BuildReadiness
@@ -88,10 +88,23 @@ namespace PFound.ContentDelivery.Editor
                     if (!ContentPlatform.HasEmbeddedBundles(p)) { d[p] = "✗ none"; continue; }
                     string pointer = System.IO.Path.Combine(dir, AssetBundleLayout.EmbeddedCatalogPointerFileName);
                     string cat = System.IO.File.Exists(pointer) ? System.IO.File.ReadAllText(pointer).Trim() : null;
-                    d[p] = $"✓ ({FormatSize(DirFilesSize(dir))})" + (cat != null ? $"  {cat}" : "  (no catalog pointer)");
+                    string mode = cat != null ? ReadCatalogBuildMode(System.IO.Path.Combine(dir, cat)) : null;
+                    d[p] = $"✓ ({FormatSize(DirFilesSize(dir))})"
+                         + (cat != null ? $"  {cat}" : "  (no catalog pointer)")
+                         + (mode != null ? $"  [{mode}]" : "");
                 }
                 return d;
             }
+        }
+
+        // Head-decode just the top-level buildMode string from a catalog file (JsonUtility ignores the bundle/asset
+        // arrays), or null when absent (old catalogs / unreadable). §1.4c: surfaces the stamped dev/prod posture.
+        [System.Serializable] private struct CatalogModeDto { public string version; public string buildMode; }
+        static string ReadCatalogBuildMode(string catalogPath)
+        {
+            if (!File.Exists(catalogPath)) return null;
+            var dto = JsonUtility.FromJson<CatalogModeDto>(File.ReadAllText(catalogPath));
+            return string.IsNullOrEmpty(dto.buildMode) ? null : dto.buildMode;
         }
 
         [FoldoutGroup("Build Readiness (LOCAL only — not the CDN)")]
