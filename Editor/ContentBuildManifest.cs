@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Sirenix.OdinInspector;
 using UnityEngine;
+using PFound.ContentDelivery;
 
 namespace PFound.ContentDelivery.Editor
 {
@@ -24,9 +26,23 @@ namespace PFound.ContentDelivery.Editor
     [CreateAssetMenu(menuName = "PFound/Content Delivery/Content Build Manifest", fileName = "ContentBuildManifest")]
     public sealed class ContentBuildManifest : ScriptableObject, IContentAuthoringValidation
     {
+        [InfoBox("@AuthoringValidation.Errors(this)", InfoMessageType.Error, "@AuthoringValidation.HasErrors(this)")]
+        [InfoBox("@AuthoringValidation.Warnings(this)", InfoMessageType.Warning, "@AuthoringValidation.HasWarnings(this)")]
+        [InfoBox("Ready — no manifest issues.", InfoMessageType.Info, "@AuthoringValidation.Ready(this)")]
+        [FoldoutGroup("Sets", expanded: true)]
         public List<ContentSet> Sets = new List<ContentSet>();
+
+        [FoldoutGroup("Always Included (core — every build)")]
         public List<AssetGroup> AlwaysIncluded = new List<AssetGroup>();
-        public CatalogEditorConfig Config;   // the "how": platform / env / offline / Mode
+
+        [FoldoutGroup("Build", expanded: true), Required]
+        public CatalogEditorConfig Config;
+
+        [FoldoutGroup("Build")]
+        public BuildSelectionMode Selection = BuildSelectionMode.AllSets;
+
+        [FoldoutGroup("Build"), ShowIf("@Selection == BuildSelectionMode.SingleSet"), CustomValueDrawer(nameof(DrawSetId))]
+        public string SelectedSetId;   // used when Selection == SingleSet
 
         /// <summary>
         /// The exact group list for a scope: AllSets → union of every set's groups; SingleSet → the named set's
@@ -54,6 +70,83 @@ namespace PFound.ContentDelivery.Editor
             return result;
         }
 
-        public IEnumerable<AuthoringIssue> Validate() { yield break; } // filled in Task 3
+        /// <summary>
+        /// Resolves the current scope, drops dev-only groups in <see cref="BuildMode.Production"/>,
+        /// and hands the exact group list to <see cref="CatalogEditorBuildRunner.Build(CatalogEditorConfig, IReadOnlyList{AssetGroup})"/>.
+        /// </summary>
+        [FoldoutGroup("Build"), Button("Build (resolve scope → CatalogEditorBuildRunner)", ButtonSizes.Medium)]
+        void BuildSelected()
+        {
+            if (!Config) { Debug.LogError("[ContentDelivery] Manifest has no CatalogEditorConfig — assign one."); return; }
+            var groups = ResolveGroups(this, Selection, SelectedSetId);
+            if (Config.Mode == BuildMode.Production)
+                groups = BuildScopeFilter.Apply(groups, BuildScope.ExcludeInProd);   // drop dev-only in production
+            CatalogEditorBuildRunner.Build(Config, groups);
+        }
+
+        /// <summary>
+        /// Inspector self-validation: (1) buildability — every entry in the resolved scope has an Asset and a
+        /// unique, non-empty Address; (2) orphan — a project AssetGroup covered by no set and not AlwaysIncluded
+        /// never builds; (3) drift — the resolved scope's addresses vs the last embedded catalog for this platform.
+        /// </summary>
+        public IEnumerable<AuthoringIssue> Validate()
+        {
+            // Resolve the current scope (guard unknown id so the inspector doesn't throw). yield can't live in a
+            // catch, so capture the error then yield after the try/catch.
+            List<AssetGroup> resolved = null;
+            string resolveError = null;
+            try { resolved = ResolveGroups(this, Selection, SelectedSetId); }
+            catch (ArgumentException e) { resolveError = e.Message; }
+            if (resolveError != null) { yield return AuthoringIssue.Error(resolveError); yield break; }
+
+            // 1) Buildability gate: every resolved entry valid + addresses unique across the set.
+            var seenAddr = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var g in resolved)
+                foreach (var e in g.Entries)
+                {
+                    string where = $"{g.name}/{(e.Asset ? e.Asset.name : "?")}";
+                    if (!e.Asset) yield return AuthoringIssue.Error($"[{where}] no Asset assigned.");
+                    if (string.IsNullOrWhiteSpace(e.Address)) yield return AuthoringIssue.Error($"[{where}] empty Address.");
+                    else if (!seenAddr.Add(e.Address)) yield return AuthoringIssue.Error($"Duplicate Address '{e.Address}' across the resolved set.");
+                }
+
+            // 2) Orphan: project AssetGroups covered by NO set and not AlwaysIncluded → never build.
+            var covered = new HashSet<AssetGroup>(Sets.SelectMany(s => s.Groups).Concat(AlwaysIncluded).Where(x => x));
+            foreach (var g in ContentDeliveryMenu.LoadAllGroups())
+                if (!covered.Contains(g))
+                    yield return AuthoringIssue.Warning($"AssetGroup '{g.name}' is in no set and not AlwaysIncluded — it will never build.");
+
+            // 3) Drift vs last embedded build (informational): selected addresses vs the last built catalog.
+            string platform = Config ? Config.PlatformFolder() : ContentPlatform.ActivePlatformFolder();
+            var built = ReadEmbeddedAddresses(platform);
+            if (built != null)
+            {
+                var selectedAddrs = resolved.SelectMany(g => g.Entries).Select(e => e.Address).Where(a => !string.IsNullOrEmpty(a)).ToHashSet(StringComparer.Ordinal);
+                foreach (var a in selectedAddrs) if (!built.Contains(a)) yield return AuthoringIssue.Error($"Selected but not in the last build: '{a}' — rebuild.");
+                foreach (var a in built) if (!selectedAddrs.Contains(a)) yield return AuthoringIssue.Warning($"Last build has extra content beyond the selected scope: '{a}' (harmless, wider than expected).");
+            }
+        }
+
+        // Reads the addresses present in the last embedded catalog for a platform, or null if none built.
+        // Editor-only, desktop StreamingAssets file read — sync-over-async is acceptable at this boundary.
+        static HashSet<string> ReadEmbeddedAddresses(string platform)
+        {
+            if (!ContentPlatform.HasEmbeddedBundles(platform)) return null;
+            var res = EmbeddedCatalogReader.TryReadEmbeddedCatalogAsync(platform).GetAwaiter().GetResult();
+            if (!res.Found) return null;
+            return res.Catalog.AllAssets.Select(a => a.Address).ToHashSet(StringComparer.Ordinal);
+        }
+
+        // Plain-popup drawer for the set id (avoid Odin's broken selector window on this Unity version).
+        string DrawSetId(string value, GUIContent label)
+        {
+            var ids = Sets.Select(s => s.Id).Where(s => !string.IsNullOrEmpty(s)).ToArray();
+            if (ids.Length == 0) { UnityEditor.EditorGUILayout.LabelField(label, new GUIContent("(add a set with an Id)")); return value; }
+            int cur = Array.IndexOf(ids, value);
+            if (cur >= 0) { int p = UnityEditor.EditorGUILayout.Popup(label.text, cur, ids); return p != cur ? ids[p] : value; }
+            var opts = new[] { $"⚠ '{value}'" }.Concat(ids).ToArray();
+            int q = UnityEditor.EditorGUILayout.Popup(label.text, 0, opts);
+            return q > 0 ? ids[q - 1] : value;
+        }
     }
 }
