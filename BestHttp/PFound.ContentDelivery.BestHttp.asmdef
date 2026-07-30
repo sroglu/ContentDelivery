@@ -1,0 +1,20 @@
+{
+    "name": "PFound.ContentDelivery.BestHttp",
+    "rootNamespace": "PFound.ContentDelivery.Transport",
+    "references": [
+        "PFound.ContentDelivery.Core",
+        "PFound.ContentDelivery",
+        "BestHTTP"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "PFOUND_BESTHTTP"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

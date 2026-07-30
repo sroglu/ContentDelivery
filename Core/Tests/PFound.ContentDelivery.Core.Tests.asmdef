@@ -1,0 +1,17 @@
+{
+    "name": "PFound.ContentDelivery.Core.Tests",
+    "rootNamespace": "PFound.ContentDelivery.Core.Tests",
+    "references": [
+        "PFound.ContentDelivery.Core",
+        "PFound.Compression"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": true
+}

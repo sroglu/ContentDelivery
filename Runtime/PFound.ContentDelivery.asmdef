@@ -1,0 +1,19 @@
+{
+    "name": "PFound.ContentDelivery",
+    "rootNamespace": "PFound.ContentDelivery",
+    "references": [
+        "PFound.ContentDelivery.Core",
+        "UniTask",
+        "Unity.Collections",
+        "Unity.Mathematics"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
