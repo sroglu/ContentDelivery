@@ -49,6 +49,8 @@ namespace PFound.ContentDelivery
             // Pointer-driven discovery: ask the remote pointer which catalog is current, so the CDN can serve the
             // arbitrary (hash-stamped) name the config can't predict. Fail-soft — an offline / missing / unparsable
             // pointer falls back to the config-carried CatalogFileName (legacy CDN / not-yet-published).
+            var embedded = await EmbeddedCatalogReader.TryReadEmbeddedCatalogAsync(opts.PlatformFolder);
+
             string required = remoteConfig.CatalogFileName;
             if (!remoteConfig.IsOffline)
             {
@@ -56,8 +58,11 @@ namespace PFound.ContentDelivery
                     .TryReadPointerAsync(remoteConfig.OriginUrl, remoteConfig.PlatformFolder, cancellationToken);
                 if (pointer.Resolved) required = pointer.CatalogFileName;
             }
-
-            var embedded = await EmbeddedCatalogReader.TryReadEmbeddedCatalogAsync(opts.PlatformFolder);
+            else if (embedded.Found)
+            {
+                // Offline build: use embedded catalog directly, no pointer/download
+                required = embedded.FileName;
+            }
             string cachedPath = Path.Combine(opts.CacheDirectory, required);
             bool cached = File.Exists(cachedPath);
 
@@ -109,6 +114,11 @@ namespace PFound.ContentDelivery
             }
             catch (Exception e)
             {
+                if (embedded.Found)
+                {
+                    UnityEngine.Debug.LogWarning($"[ContentDelivery] {plan} catalog resolution failed ({e.Message}) — falling back to embedded '{embedded.FileName}'.");
+                    return new CatalogResolveResult(true, embedded.Catalog, CatalogSource.Embedded, null);
+                }
                 return new CatalogResolveResult(false, null, plan, e.Message);
             }
         }

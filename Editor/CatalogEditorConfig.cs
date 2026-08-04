@@ -71,27 +71,60 @@ namespace PFound.ContentDelivery.Editor
         string AppVersionDisplay => AppVersion();
         [FoldoutGroup("Catalog Version"), ShowInInspector, ReadOnly, LabelText("Last Built #")]
         int LastBuiltDisplay => CatalogBuildNumber;
-        [FoldoutGroup("Catalog Version"), LabelText("Build # override")]
+        [FoldoutGroup("Catalog Version"), LabelText("Build # override"), DisableIf(nameof(ReuseLastBuildNumber))]
         [Tooltip("Empty = auto-increment (last built + 1). Enter a number to force the NEXT build number; it is " +
-                 "clamped to ≥ the last built # so it never regresses (min = last build).")]
+                 "clamped to ≥ the last built # so it never regresses (min = last build). Ignored when 'Reuse last build #' is on.")]
         public string BuildNumberOverride = "";
+
+        [FoldoutGroup("Catalog Version"), LabelText("Reuse last build # (no increment)")]
+        [Tooltip("Rebuild with the SAME build number as the last build — same catalog name, no version churn. " +
+                 "Overrides 'Build # override'. If never built, uses 0.")]
+        public bool ReuseLastBuildNumber = false;
+
+        [FoldoutGroup("Catalog Version"), GUIColor(0.9f, 0.5f, 0.4f), Button("Reset build number -> 0")]
+        void ResetBuildNumber()
+        {
+            if (!EditorUtility.DisplayDialog("Reset build number",
+                    $"Reset the catalog build number from {_catalogBuildNumber} back to 0?\n\n" +
+                    "The next build will be #1 (or #0 when 'Reuse last build #' is on). Existing catalogs keep their names.",
+                    "Reset", "Cancel")) return;
+            _catalogBuildNumber = 0;
+            BuildNumberOverride = "";
+            EditorUtility.SetDirty(this);
+            AssetDatabase.SaveAssets();
+        }
         [FoldoutGroup("Catalog Version"), ShowInInspector, ReadOnly, DisplayAsString, LabelText("Next Catalog (preview)")]
         string NextCatalogPreview => CatalogNameVersion.Compose(GameId, AppVersion(), ResolveNextBuildNumber(), ModeToken());
         // Current Catalog = the catalog the runtime actually resolves — read from the LIVE embedded pointer (the real
         // file on disk), NOT reconstructed from this config. Reflects the version+build+mode actually in use (§1.4e).
-        [FoldoutGroup("Catalog Version"), ShowInInspector, ReadOnly, DisplayAsString, LabelText("Current Catalog (live pointer)")]
+        [FoldoutGroup("Catalog Version")]
+        [InfoBox("@NoEmbeddedCatalogError", InfoMessageType.Error, "@ShowNoEmbeddedCatalogError")]
+        [ShowInInspector, ReadOnly, DisplayAsString, LabelText("Current Catalog (live pointer)")]
         [Tooltip("What the runtime resolves now, from the embedded catalog pointer. 'none / not built' until an App Build stages one.")]
         string CurrentCatalogDisplay
         {
-            get
-            {
-                string dir = ContentPlatform.GetEmbeddedAssetBundlePath(PlatformFolder());
-                string pointer = System.IO.Path.Combine(dir, AssetBundleLayout.EmbeddedCatalogPointerFileName);
-                if (!System.IO.File.Exists(pointer)) return "none / not built";
-                string file = System.IO.File.ReadAllText(pointer).Trim();
-                return string.IsNullOrEmpty(file) ? "none / not built" : file;
-            }
+            get { string file = LiveEmbeddedCatalogFile(); return file == null ? "none / not built" : file; }
         }
+
+        // The live embedded catalog the runtime resolves for the TARGET platform (BuildPlatform), or null when none is
+        // staged. Reads the on-disk pointer — reflects what's actually shipped, not this config's intent.
+        string LiveEmbeddedCatalogFile()
+        {
+            string dir = ContentPlatform.GetEmbeddedAssetBundlePath(PlatformFolder());
+            string pointer = System.IO.Path.Combine(dir, AssetBundleLayout.EmbeddedCatalogPointerFileName);
+            if (!System.IO.File.Exists(pointer)) return null;
+            string file = System.IO.File.ReadAllText(pointer).Trim();
+            return string.IsNullOrEmpty(file) ? null : file;
+        }
+
+        // OfflineBuild ships ONLY the embedded catalog. If none is staged for the target platform, a Player build still
+        // COMPILES but the runtime resolves no content source -> every AssetSystem address (mini-games, environments,
+        // characters) returns null at load. Surfaced as a loud red box so a broken build isn't shipped/tested unknowingly.
+        bool ShowNoEmbeddedCatalogError => OfflineBuild && LiveEmbeddedCatalogFile() == null;
+
+        string NoEmbeddedCatalogError =>
+            $"No embedded catalog for {PlatformFolder()} - the app will BUILD and RUN but AssetSystem content " +
+            "(mini-games, environments, characters) won't load. Build ContentBuildManifest for this platform first.";
 
         // Per-platform embedded build table (Platform → ✓/✗ + size + catalog + build mode). dir stat + pointer read;
         // the mode is parsed from the catalog FILE NAME (all metadata lives in the name). LOCAL build state — NOT the CDN.
@@ -258,12 +291,14 @@ namespace PFound.ContentDelivery.Editor
         public string AppVersion() => PlayerSettings.bundleVersion;
 
         /// <summary>
-        /// The build number the NEXT App Build will use: the explicit <see cref="BuildNumberOverride"/> when set
-        /// (clamped to ≥ the last built number so it never regresses), else auto-increment (last + 1) when empty or
-        /// unparseable. Pure — does not mutate state (call <see cref="CommitBuildNumber"/> to persist).
+        /// The build number the NEXT App Build will use: <see cref="ReuseLastBuildNumber"/> reuses the last built
+        /// number (no increment); else the explicit <see cref="BuildNumberOverride"/> when set (clamped to ≥ the last
+        /// built number so it never regresses), else auto-increment (last + 1) when empty or unparseable. Pure — does
+        /// not mutate state (call <see cref="CommitBuildNumber"/> to persist).
         /// </summary>
         public int ResolveNextBuildNumber()
         {
+            if (ReuseLastBuildNumber) return _catalogBuildNumber;   // reuse last build number — no increment, same catalog name
             if (!string.IsNullOrWhiteSpace(BuildNumberOverride) && int.TryParse(BuildNumberOverride.Trim(), out int n))
                 return Mathf.Max(n, _catalogBuildNumber);   // min = last built; a below-last entry is raised, never regresses
             return _catalogBuildNumber + 1;                 // empty / unparseable → auto-increment
@@ -320,13 +355,18 @@ namespace PFound.ContentDelivery.Editor
                 yield return AuthoringIssue.Warning("Game Id is empty — set a game id (it names the catalog).");
 
             // Build-number override (applies to offline + online): flag a non-number or a below-last entry.
-            if (!string.IsNullOrWhiteSpace(BuildNumberOverride))
+            // Skipped when reuse is on — the override is ignored then, so a warning would be misleading.
+            if (!ReuseLastBuildNumber && !string.IsNullOrWhiteSpace(BuildNumberOverride))
             {
                 if (!int.TryParse(BuildNumberOverride.Trim(), out int n))
                     yield return AuthoringIssue.Warning($"Build # override '{BuildNumberOverride}' is not a number — the next build will auto-increment (last + 1).");
                 else if (n < _catalogBuildNumber)
                     yield return AuthoringIssue.Warning($"Build # override {n} is below the last built #{_catalogBuildNumber} — it will be raised to {_catalogBuildNumber} (min = last build).");
             }
+
+            // Offline ships only the embedded catalog; a missing one means the app builds but loads no content.
+            if (ShowNoEmbeddedCatalogError)
+                yield return AuthoringIssue.Error(NoEmbeddedCatalogError);
 
             if (OfflineBuild) yield break; // env/upload ignored offline
 

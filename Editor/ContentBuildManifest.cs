@@ -139,6 +139,10 @@ namespace PFound.ContentDelivery.Editor
                         yield return AuthoringIssue.Warning($"Last embedded build was '{lastMode}' but Config.Mode is now '{cur}' — rebuild to match.");
                 }
             }
+            else
+            {
+                yield return AuthoringIssue.Error($"Embedded catalog not found for platform '{platform}' — content build incomplete.");
+            }
         }
 
         // Reads the last embedded catalog (+ its file name) for a platform, or NotFound if none built. Editor-only
