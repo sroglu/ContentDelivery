@@ -92,6 +92,8 @@ namespace PFound.ContentDelivery.Editor
         /// </summary>
         public IEnumerable<AuthoringIssue> Validate()
         {
+            Debug.LogWarning($"[ContentBuildManifest.Validate] Called with {Sets.Count} sets, {AlwaysIncluded.Count} always-included");
+
             // Guard the one precondition that would make ResolveGroups throw (unknown SingleSet id) EXPLICITLY —
             // don't try/catch our own throw. If it holds, ResolveGroups can't throw, so no defensive wrapping.
             if (Selection == BuildSelectionMode.SingleSet &&
@@ -104,9 +106,17 @@ namespace PFound.ContentDelivery.Editor
             // Check for dead group references (missing/deleted assets) before resolving.
             // ResolveGroups silently drops nulls, which hides broken wiring — catch it explicitly.
             foreach (var set in Sets)
+            {
+                Debug.LogWarning($"  Checking set '{set.Id}': {set.Groups.Count} groups");
                 foreach (var g in set.Groups)
+                {
                     if (g == null)
+                    {
+                        Debug.LogError($"    Found null group in set '{set.Id}'");
                         yield return AuthoringIssue.Error($"ContentSet '{set.Id}' has a null group reference — the asset was deleted or moved.");
+                    }
+                }
+            }
             foreach (var g in AlwaysIncluded)
                 if (g == null)
                     yield return AuthoringIssue.Error($"AlwaysIncluded has a null group reference — the asset was deleted or moved.");
