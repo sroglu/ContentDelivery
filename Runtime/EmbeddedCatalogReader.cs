@@ -51,10 +51,18 @@ namespace PFound.ContentDelivery
             byte[] catalogBytes = await TryReadBytesAsync(Combine(dir, catalogFileName));
             if (catalogBytes == null) return EmbeddedCatalogResult.NotFound;
 
-            // Decoding is our own code; a malformed embedded catalog is a build defect, so let it surface (fail-fast)
-            // rather than silently booting an app with no content.
-            Catalog catalog = CatalogCodec.Decode(catalogBytes, ParseJson);
-            return new EmbeddedCatalogResult(true, catalog, catalogFileName);
+            // Decoding may fail on a malformed/incomplete embedded catalog (a build defect).
+            // Fail-soft: log and return NotFound instead of crashing boot, honoring Constitution §II.
+            try
+            {
+                Catalog catalog = CatalogCodec.Decode(catalogBytes, ParseJson);
+                return new EmbeddedCatalogResult(true, catalog, catalogFileName);
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"[ContentDelivery] Failed to decode embedded catalog '{catalogFileName}': {e.Message} — booting without it.");
+                return EmbeddedCatalogResult.NotFound;
+            }
         }
 
         private static Catalog ParseJson(byte[] bytes) => CatalogJson.Parse(Encoding.UTF8.GetString(bytes));

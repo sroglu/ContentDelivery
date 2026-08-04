@@ -147,10 +147,19 @@ namespace PFound.ContentDelivery.Editor
 
         // Reads the last embedded catalog (+ its file name) for a platform, or NotFound if none built. Editor-only
         // desktop StreamingAssets file read — sync-over-async is acceptable at this boundary.
+        // Catches decode failures (corrupted/incomplete catalog file) and treats them as NotFound.
         static EmbeddedCatalogResult ReadEmbeddedCatalog(string platform)
         {
             if (!ContentPlatform.HasEmbeddedBundles(platform)) return EmbeddedCatalogResult.NotFound;
-            return EmbeddedCatalogReader.TryReadEmbeddedCatalogAsync(platform).GetAwaiter().GetResult();
+            try
+            {
+                return EmbeddedCatalogReader.TryReadEmbeddedCatalogAsync(platform).GetAwaiter().GetResult();
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[ContentDelivery] Failed to read embedded catalog for '{platform}': {e.Message}");
+                return EmbeddedCatalogResult.NotFound;
+            }
         }
 
         // Plain-popup drawers (avoid Odin's broken selector window on this Unity version — see the module convention).
