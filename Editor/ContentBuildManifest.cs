@@ -100,6 +100,17 @@ namespace PFound.ContentDelivery.Editor
                 yield return AuthoringIssue.Error($"No ContentSet with Id '{SelectedSetId}'.");
                 yield break;
             }
+
+            // Check for dead group references (missing/deleted assets) before resolving.
+            // ResolveGroups silently drops nulls, which hides broken wiring — catch it explicitly.
+            foreach (var set in Sets)
+                foreach (var g in set.Groups)
+                    if (g == null)
+                        yield return AuthoringIssue.Error($"ContentSet '{set.Id}' has a null group reference — the asset was deleted or moved.");
+            foreach (var g in AlwaysIncluded)
+                if (g == null)
+                    yield return AuthoringIssue.Error($"AlwaysIncluded has a null group reference — the asset was deleted or moved.");
+
             var resolved = ResolveGroups(this, Selection, SelectedSetId);
 
             // 1) Buildability gate: every resolved entry valid + addresses unique across the set.
