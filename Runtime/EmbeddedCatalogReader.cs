@@ -40,16 +40,34 @@ namespace PFound.ContentDelivery
     {
         public static async UniTask<EmbeddedCatalogResult> TryReadEmbeddedCatalogAsync(string platformFolder = null)
         {
+            // Every miss below logs the PATH it missed at. A silent NotFound is indistinguishable from
+            // "this build ships no embedded content", which is what made a wrong embedded root (the
+            // AssetBundles/<platform> segment omitted from the Local origin) survive undetected for weeks.
             string dir = ContentPlatform.GetEmbeddedAssetBundlePath(platformFolder);
 
-            byte[] pointerBytes = await TryReadBytesAsync(Combine(dir, AssetBundleLayout.EmbeddedCatalogPointerFileName));
-            if (pointerBytes == null) return EmbeddedCatalogResult.NotFound;
+            string pointerPath = Combine(dir, AssetBundleLayout.EmbeddedCatalogPointerFileName);
+            byte[] pointerBytes = await TryReadBytesAsync(pointerPath);
+            if (pointerBytes == null)
+            {
+                Debug.LogError($"[ContentDelivery] Embedded catalog pointer unreadable at '{pointerPath}'.");
+                return EmbeddedCatalogResult.NotFound;
+            }
 
             string catalogFileName = Encoding.UTF8.GetString(pointerBytes).Trim();
-            if (catalogFileName.Length == 0) return EmbeddedCatalogResult.NotFound;
+            if (catalogFileName.Length == 0)
+            {
+                Debug.LogError($"[ContentDelivery] Embedded catalog pointer at '{pointerPath}' is empty.");
+                return EmbeddedCatalogResult.NotFound;
+            }
 
-            byte[] catalogBytes = await TryReadBytesAsync(Combine(dir, catalogFileName));
-            if (catalogBytes == null) return EmbeddedCatalogResult.NotFound;
+            string catalogPath = Combine(dir, catalogFileName);
+            byte[] catalogBytes = await TryReadBytesAsync(catalogPath);
+            if (catalogBytes == null)
+            {
+                Debug.LogError($"[ContentDelivery] Embedded catalog '{catalogFileName}' unreadable at '{catalogPath}' " +
+                               "(the pointer names it, so the build staged a pointer without its catalog).");
+                return EmbeddedCatalogResult.NotFound;
+            }
 
             // Decoding may fail on a malformed/incomplete embedded catalog (a build defect).
             // Fail-soft: log and return NotFound instead of crashing boot, honoring Constitution §II.
@@ -73,12 +91,15 @@ namespace PFound.ContentDelivery
         // Reads a StreamingAssets file's bytes, or null if it is absent/unreadable (the fail-soft boundary).
         private static async UniTask<byte[]> TryReadBytesAsync(string path)
         {
+            // StreamingAssets is a jar/URL on Android + WebGL — File IO cannot reach it, only UnityWebRequest can.
             if (path.Contains("://"))
             {
                 using (var request = UnityWebRequest.Get(path))
                 {
                     await request.SendWebRequest().ToUniTask();
-                    return request.result == UnityWebRequest.Result.Success ? request.downloadHandler.data : null;
+                    if (request.result == UnityWebRequest.Result.Success) return request.downloadHandler.data;
+                    Debug.LogWarning($"[ContentDelivery] Embedded read failed ({request.error}) for '{path}'.");
+                    return null;
                 }
             }
 
@@ -86,8 +107,9 @@ namespace PFound.ContentDelivery
             {
                 return File.Exists(path) ? File.ReadAllBytes(path) : null;
             }
-            catch (IOException)
+            catch (IOException e)
             {
+                Debug.LogWarning($"[ContentDelivery] Embedded read IO error for '{path}': {e.Message}");
                 return null;
             }
         }

@@ -47,7 +47,7 @@ namespace PFound.ContentDelivery
             _catalog = catalog;
             _cacheDirectory = cacheDirectory;
             _provisioner = new BundleProvisioner(
-                transport, cacheDirectory, baseUrl, localBaseUrl ?? ContentDeliveryPaths.StreamingAssetsContentUrl,
+                transport, cacheDirectory, baseUrl, localBaseUrl ?? ContentPlatform.GetEmbeddedAssetBundleUrl(),
                 hasher: hasher ?? new XxHash3ContentHasher());
             _registry = new LoadedBundleRegistry(_provisioner);
         }
@@ -86,6 +86,14 @@ namespace PFound.ContentDelivery
         /// </summary>
         private static async UniTask<T> LoadFromBundle<T>(AssetBundle bundle, string assetName) where T : Object
         {
+            // A bundle indexes each asset under its MAIN type, so a component-typed request (Transform,
+            // Animator, …) matches nothing and AssetBundle.LoadAsset silently yields null — the caller then
+            // NREs far from the cause. AssetDatabase resolves components off the prefab root, so the editor
+            // fast-path hides this and only a player build fails. Ask for GameObject and read the component.
+            Debug.Assert(!typeof(Component).IsAssignableFrom(typeof(T)),
+                $"[ContentDelivery] '{assetName}' requested as component type {typeof(T).Name}; bundles only " +
+                "resolve an asset's main type. Load it as GameObject and take the component off the instance.");
+
             if (TrySplitSubAsset(assetName, out string mainName, out string subName))
             {
                 var subRequest = bundle.LoadAssetWithSubAssetsAsync<T>(mainName);

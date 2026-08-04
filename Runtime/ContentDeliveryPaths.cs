@@ -18,20 +18,11 @@ namespace PFound.ContentDelivery
         public static string StreamingAssetsContentDirectory =>
             Path.Combine(Application.streamingAssetsPath, ContentFolderName);
 
-        /// <summary>
-        /// StreamingAssets content directory as a fetchable URL for <see cref="UnityEngine.Networking.UnityWebRequest"/>:
-        /// already a URL on Android (jar:file://) / WebGL, a <c>file://</c> URL elsewhere. This is the Local origin
-        /// passed to the provisioner.
-        /// </summary>
-        public static string StreamingAssetsContentUrl
-        {
-            get
-            {
-                string dir = StreamingAssetsContentDirectory;
-                // On Android the path is already a jar URL; on WebGL it is an http(s) URL. Both carry a scheme.
-                return dir.Contains("://") ? dir : "file://" + dir;
-            }
-        }
+        // NOTE: there is deliberately no "content URL" helper here. The Local-bundle origin is
+        // ContentPlatform.GetEmbeddedAssetBundleUrl(), which is derived from GetEmbeddedAssetBundlePath() so the
+        // staged layout has exactly ONE definition. A second URL rooted at this directory used to exist and silently
+        // omitted the AssetBundles/<platform> segment the runner actually stages into — every Local bundle 404'd on
+        // device while the editor fast-path masked it. Don't reintroduce a second root; extend ContentPlatform.
 
         /// <summary>Default disk cache for provisioned bundles (content-addressed by hash).</summary>
         public static string DefaultCacheDirectory =>

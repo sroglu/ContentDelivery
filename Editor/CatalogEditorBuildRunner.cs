@@ -73,7 +73,12 @@ namespace PFound.ContentDelivery.Editor
             var compression = config.OfflineBuild ? BundleCompression.None : BundleCompression.Lzma;
 
             string outputDir = OutputDirectory;
+            // SBP's build imports assets, which can invalidate the managed reference to the config SO — every
+            // access past this point then throws MissingReferenceException (seen in -batchmode, where the
+            // reload is unconditional). Re-resolve it from its path instead of carrying the stale handle.
+            string configPath = AssetDatabase.GetAssetPath(config);
             var report = BundleBuildPipeline.Build(groups, outputDir, config.BuildPlatform.ToBuildTarget(), hasher: null, compression: compression);
+            config = AssetDatabase.LoadAssetAtPath<CatalogEditorConfig>(configPath);
 
             // Offline forces every bundle Local (the offline catalog has zero remote entries); otherwise the
             // pipeline's catalog passes through.
@@ -107,7 +112,7 @@ namespace PFound.ContentDelivery.Editor
         /// <summary>Removes the staged embedded package for a platform (bundles + catalog + pointer).</summary>
         public static void ClearEmbedded(string platformFolder)
         {
-            string dir = Path.Combine(Application.streamingAssetsPath, AssetBundleLayout.AssetBundlesFolder, platformFolder);
+            string dir = Path.Combine(Application.streamingAssetsPath, ContentDeliveryPaths.ContentFolderName, AssetBundleLayout.AssetBundlesFolder, platformFolder);
             if (Directory.Exists(dir)) Directory.Delete(dir, true);
             string meta = dir + ".meta";
             if (File.Exists(meta)) File.Delete(meta);
@@ -121,7 +126,7 @@ namespace PFound.ContentDelivery.Editor
         // its pointer in the embedded package, and (online) the same catalog into the publish/CDN dir.
         private static void StageEmbeddedPackage(ContentBuildReport report, Catalog catalog, CatalogEditorConfig config)
         {
-            string embeddedDir = Path.Combine(Application.streamingAssetsPath, AssetBundleLayout.AssetBundlesFolder, config.PlatformFolder());
+            string embeddedDir = Path.Combine(Application.streamingAssetsPath, ContentDeliveryPaths.ContentFolderName, AssetBundleLayout.AssetBundlesFolder, config.PlatformFolder());
             Directory.CreateDirectory(embeddedDir);
 
             // The EXACT set of files this package should contain. Everything else in the folder is swept at the end so

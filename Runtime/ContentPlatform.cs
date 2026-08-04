@@ -30,23 +30,41 @@ namespace PFound.ContentDelivery
         public static string GetRemoteAssetBundlePath(string platformFolder = null) =>
             Path.Combine(Application.persistentDataPath, AssetBundleLayout.AssetBundlesFolder, platformFolder ?? ActivePlatformFolder());
 
-        /// <summary>streamingAssetsPath/AssetBundles/&lt;platform&gt; — where build-embedded (local) bundles ship.</summary>
+        /// <summary>streamingAssetsPath/PFoundContent/AssetBundles/&lt;platform&gt; — where build-embedded (local) bundles ship.</summary>
         public static string GetEmbeddedAssetBundlePath(string platformFolder = null) =>
-            Path.Combine(Application.streamingAssetsPath, AssetBundleLayout.AssetBundlesFolder, platformFolder ?? ActivePlatformFolder());
+            Path.Combine(Application.streamingAssetsPath, ContentDeliveryPaths.ContentFolderName, AssetBundleLayout.AssetBundlesFolder, platformFolder ?? ActivePlatformFolder());
 
         /// <summary>
-        /// Whether real shippable bundles are embedded for <paramref name="platformFolder"/>: scans the embedded
-        /// folder and returns true only if at least one file is an actual bundle payload (meta files, catalog
-        /// artifacts and the pointer files don't count — see <see cref="AssetBundleLayout.IsShippableBundle"/>).
-        /// Platforms whose StreamingAssets is not an enumerable directory (Android jar, WebGL) report false.
+        /// The SAME directory as <see cref="GetEmbeddedAssetBundlePath"/>, in fetchable-URL form — the Local-bundle
+        /// origin handed to the provisioner. It must stay derived from that one method: StreamingAssets is not a
+        /// readable filesystem path on Android (jar:file://…!/assets/…) or WebGL (http://…), so Local bundles are
+        /// fetched by URL, and the two forms disagreeing means every Local bundle 404s on device while working fine
+        /// in the editor. Android/WebGL already carry a scheme; elsewhere a file:// prefix makes it a URL.
+        /// </summary>
+        public static string GetEmbeddedAssetBundleUrl(string platformFolder = null)
+        {
+            string dir = GetEmbeddedAssetBundlePath(platformFolder);
+            return dir.Contains("://") ? dir : "file://" + dir;
+        }
+
+        /// <summary>
+        /// Whether real shippable bundles are embedded for <paramref name="platformFolder"/>: checks for the embedded
+        /// catalog (the presence of which implies bundles are shipped). On platforms where StreamingAssets is not
+        /// enumerable (Android jar, WebGL), assumes yes if the catalog file exists.
         /// </summary>
         public static bool HasEmbeddedBundles(string platformFolder = null)
         {
             string dir = GetEmbeddedAssetBundlePath(platformFolder);
-            if (!Directory.Exists(dir)) return false;
-            foreach (string path in Directory.GetFiles(dir))
-                if (AssetBundleLayout.IsShippableBundle(path)) return true;
-            return false;
+            // On platforms with enumerable directories (editor, standalone), scan for shippable bundles.
+            if (Directory.Exists(dir))
+            {
+                foreach (string path in Directory.GetFiles(dir))
+                    if (AssetBundleLayout.IsShippableBundle(path)) return true;
+            }
+            // On jar-based platforms (Android), the presence of an embedded catalog implies bundles are shipped.
+            // We can't enumerate the jar directory, so we return true if a catalog pointer file might exist.
+            // The actual catalog loading via EmbeddedCatalogReader will fail safely if it's missing.
+            return dir.Contains("://");
         }
 
         /// <summary>
