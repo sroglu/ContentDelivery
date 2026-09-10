@@ -34,14 +34,25 @@ namespace PFound.ContentDelivery.Core
         public DecompressionFailedException(string message, Exception inner = null) : base(message, inner, retryable: false) { }
     }
 
-    /// <summary>Retries were exhausted; carries the attempt count and the last underlying cause — fatal.</summary>
+    /// <summary>
+    /// Retries were exhausted; carries the attempt count, the URL that was actually tried, and the last
+    /// underlying cause — fatal. The URL is part of the message on purpose: a wrong origin (a missing
+    /// <c>AssetBundles/&lt;platform&gt;</c> segment) is indistinguishable from "server down" without it, and both
+    /// times that defect shipped, this exception was the only thing that knew the answer.
+    /// </summary>
     public sealed class RetryCountExceededException : ContentDeliveryException
     {
         public int Attempts { get; }
-        public RetryCountExceededException(string bundleName, int attempts, Exception inner)
-            : base("Failed to provision bundle '" + bundleName + "' after " + attempts + " attempt(s).", inner, retryable: false)
+
+        /// <summary>The fully-composed URL the provisioner attempted, origin included.</summary>
+        public string Url { get; }
+
+        public RetryCountExceededException(string bundleName, int attempts, string url, Exception inner)
+            : base("Failed to provision bundle '" + bundleName + "' after " + attempts + " attempt(s) from '" +
+                   url + "'.", inner, retryable: false)
         {
             Attempts = attempts;
+            Url = url;
         }
     }
 }

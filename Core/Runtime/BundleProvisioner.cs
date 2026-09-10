@@ -91,7 +91,7 @@ namespace PFound.ContentDelivery.Core
                     last = e;
                 }
             }
-            throw new RetryCountExceededException(bundle.Name, _maxAttempts, last);
+            throw new RetryCountExceededException(bundle.Name, _maxAttempts, url, last);
         }
 
         /// <summary>

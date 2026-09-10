@@ -138,8 +138,13 @@ namespace PFound.ContentDelivery
             string cacheDirectory = options.CacheDirectory ?? ContentPlatform.GetRemoteAssetBundlePath(platform);
             IContentHasher hasher = options.Hasher ?? new XxHash3ContentHasher();
 
+            // ResolveContentUrl(), NOT OriginUrl: bundles live under <origin>/AssetBundles/<platform>/, and
+            // RemoteContentConfig is the one place that knows it — the catalog fetch above already goes through
+            // it (GetCatalogUrl). Handing the provisioner the bare origin drops those two segments and every
+            // Remote bundle 404s, which the provisioner reports as a retry-exhausted null far from here. This is
+            // the remote twin of the Local-origin defect; keep both roots derived, never re-spelled.
             var source = new RemoteBundleAssetSource(
-                result.Catalog, transport, cacheDirectory, remoteConfig.OriginUrl, localBaseUrl: null, hasher);
+                result.Catalog, transport, cacheDirectory, remoteConfig.ResolveContentUrl(), localBaseUrl: null, hasher);
             AssetManager.RegisterSource(source);
 
             // Engine-lifecycle wiring: the frame pump for deferred unload + the Application.lowMemory hook, and

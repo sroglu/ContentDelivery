@@ -107,6 +107,12 @@ namespace PFound.ContentDelivery
             }
             catch (System.Exception e)
             {
+                // op.Error only ever surfaces through GetAwaiter(); every caller in this project awaits
+                // op.Task, which reports completion without ever reading Error. So the real cause — a 404 URL,
+                // a hash mismatch, a retry-exhausted download — was being discarded and the caller saw a bare
+                // null. Log here, at the one place every load funnels through: cold path, and it rescues all
+                // await-Task call sites at once.
+                Debug.LogError($"[ContentDelivery] Load failed for '{op.Address.Value}' as {typeof(T).Name}: {e}");
                 op.Error = e;
                 op.Status = AssetLoadingStatus.Failed;
             }
