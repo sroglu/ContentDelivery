@@ -463,5 +463,3 @@ the natural caller.
 The engine-free catalog/provisioning/scheduling core has a standalone csc/mono runner
 (`Core/Tests/Program.cs`, asmdef `noEngineReferences: true`); the runtime + editor layers have NUnit
 EditMode/PlayMode suites under `Tests/`.
-</content>
-</invoke>

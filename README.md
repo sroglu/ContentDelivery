@@ -47,4 +47,3 @@ Deep reference: [MODULE.md](MODULE.md) — assemblies, the full API, the IAssetS
 build path, editor fast-path, and `PFOUND_BESTHTTP` transport selection.
 
 Part of the PFound modular Unity foundation.
-</content>
